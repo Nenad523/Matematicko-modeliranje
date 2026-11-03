@@ -1,5 +1,5 @@
 """
-Član 1: Svijet u kojem agent živi.
+Svijet u kojem agent živi.
 Simulirana soba + on/off termostat kao mjerilo.
 
 Ugovor prema ostalim članovima:
@@ -10,7 +10,7 @@ Ugovor prema ostalim članovima:
             a =  0  -> klima isključena
             a = +1  -> maksimalno grijanje
             između -> proporcionalna snaga
-        info = {"T_soba", "T_spolja", "t", "T_cilj"}
+       info = {"T_soba", "T_spolja", "t", "T_cilj", "a"}
 """
 
 import numpy as np
@@ -22,7 +22,7 @@ class Room:
         dT_soba/dt = -K * (T_soba - T_spolja) + G * a
     Diskretizacija: Ojler, dt = 6 min = 0.1 h. Epizoda = 24 h = 240 koraka.
 
-    Stanje: s = [T_soba - T_cilj, T_spolja - T_soba]
+    Stanje: s = [(T_soba - T_cilj)/3, (T_spolja - T_soba)/10]   (skalirano)
     Akcija: a ∈ [-1, 1], realan koeficijent (nije diskretan skup!)
     Nagrada: r = -(T_soba - T_cilj)^2 - W_STRUJA * a^2
     """
@@ -33,6 +33,9 @@ class Room:
     G = 1.50            # °C/h pri |a|=1, maksimalna snaga klime
     T_CILJ = 21.0       # °C, željena temperatura
 
+    # --- skaliranje stanja (da tanh ne uđe u zasićenje) ---
+    SKALA = np.array([3.0, 10.0])
+    
     # --- dnevni ciklus spoljne temperature ---
     T_SPOLJA_SREDNJA = 17.5
     T_SPOLJA_AMPLITUDA = 7.5
@@ -57,13 +60,17 @@ class Room:
     def _state(self):
         Ts = self.T_soba
         Tsp = self._T_spolja(self.t)
-        return np.array([Ts - self.T_CILJ, Tsp - Ts], dtype=np.float64)
+        s = np.array([Ts - self.T_CILJ, Tsp - Ts], dtype=np.float64)
+        return s / self.SKALA
 
     # ---------- ugovor ----------
-    def reset(self):
+    def reset(self, T0=None):
         """Novi dan sa nasumičnim početnim uslovima."""
         self.t = 0.0
-        self.T_soba = float(self.T_CILJ + self.rng.uniform(-3.0, 3.0))
+        if T0 is None:
+            self.T_soba = float(self.T_CILJ + self.rng.uniform(-3.0, 3.0))
+        else:
+            self.T_soba = float(T0)
         self.done = False
         return self._state()
 
@@ -96,6 +103,7 @@ class Room:
             "T_spolja": Tsp,
             "t": self.t,
             "T_cilj": self.T_CILJ,
+            "a": a,        # klipovana akcija koja je zaista primijenjena
         }
         return self._state(), float(r), bool(self.done), info
 
@@ -107,8 +115,9 @@ class OnOffThermostat:
     ali Room.step prima bilo koji realan broj iz [-1, 1], pa je interfejs isti.
     """
 
-    def __init__(self, histereza=0.5):
+    def __init__(self, histereza=0.5, iskljuci_u_zoni=False):
         self.histereza = histereza
+        self.iskljuci_u_zoni = iskljuci_u_zoni
         self.a = 0.0
 
     def reset(self):
@@ -119,17 +128,18 @@ class OnOffThermostat:
             self.a = 1.0
         elif T_soba > T_cilj + self.histereza:
             self.a = -1.0
-        # inače zadrži prethodno (bez treperenja)
+        elif self.iskljuci_u_zoni:
+            self.a = 0.0
         return self.a
 
 
-def run_thermostat(room, n_episodes=1, seed=999, histereza=0.5):
+def run_thermostat(room, n_episodes=1, seed=999, histereza=0.5, iskljuci_u_zoni=False):
     """Odigraj on/off termostat u istoj sobi. Vrati trajektorije."""
     trajs = []
     for i in range(n_episodes):
         room.rng = np.random.default_rng(seed + i)
         room.reset()
-        th = OnOffThermostat(histereza=histereza)
+        th = OnOffThermostat(histereza=histereza, iskljuci_u_zoni=iskljuci_u_zoni)
         th.reset()
         Ts, Tsp, acts, ts = [], [], [], []
         done = False
@@ -182,11 +192,12 @@ if __name__ == "__main__":
             break
     print(f"T_soba: {T0:.2f} -> {info['T_soba']:.2f}")
 
-    # 4) termostat
-    print("=== on/off termostat ===")
-    trajs = run_thermostat(Room(seed=0), n_episodes=1, seed=999)
-    th = trajs[0]
-    err = float(np.sum((th["T_soba"] - Room.T_CILJ) ** 2))
-    cons = float(np.sum(th["actions"] ** 2))
-    print(f"greška={err:.2f}, potrošnja Σa²={cons:.2f}, "
-          f"T_soba min/max={th['T_soba'].min():.2f}/{th['T_soba'].max():.2f}")
+    # 4) termostat, obje varijante
+    for zona in (False, True):
+        th = run_thermostat(Room(seed=0), n_episodes=1, seed=999,
+                            iskljuci_u_zoni=zona)[0]
+        err = float(np.sum((th["T_soba"] - Room.T_CILJ) ** 2))
+        cons = float(np.sum(th["actions"] ** 2))
+        print(f"=== termostat, iskljuci_u_zoni={zona} ===")
+        print(f"greška={err:.2f}, potrošnja Σa²={cons:.2f}, "
+              f"T_soba min/max={th['T_soba'].min():.2f}/{th['T_soba'].max():.2f}")
