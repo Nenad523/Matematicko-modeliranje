@@ -136,8 +136,19 @@ class Trainer:
     # Čuvanje naučenenih podataka
     def save(self, path="results/trained.npz"):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
         self.policy.save(path)
-        print(f"Podaci sačuvani: {path}")
+
+        np.savez(
+            "results/training_log.npz",
+            ret=self.log["ret"],
+            w1=self.log["w1"],
+            w2=self.log["w2"],
+            b=self.log["b"],
+            sigma=self.log["sigma"]
+        )
+
+        print("Model i istorija treninga su sačuvani.")
 
 
 # Ako se fajl pokreće direktno: istreniraj i sačuvaj

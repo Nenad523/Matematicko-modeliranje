@@ -196,19 +196,39 @@ class Evaluator:
 # Ako se fajl pokreće direktno: učítaj politiku, demo + grafikoni (nece se prikazati grafici 1,4,5 jer nema istorije)
 # =====================================================================
 if __name__ == "__main__":
-    # Ako nema istrenirane politike, istreniraj brzo preko Trainer-a
+
     model_path = "results/trained.npz"
+    log_path = "results/training_log.npz"
 
     if os.path.exists(model_path):
         trained = Policy(seed=0)
         trained.load(model_path)
-        # pošto nemamo log, napravimo minimalni "prazan" log
-        # (za pravi izvještaj pokreni train.py pa plots.py nad istim log-om)
-        log = {"ret": [], "w1": [], "w2": [], "b": [], "sigma": []}
+
+        # Učitavanje istorije treninga
+        if os.path.exists(log_path):
+            data = np.load(log_path)
+
+            log = {
+                "ret": data["ret"],
+                "w1": data["w1"],
+                "w2": data["w2"],
+                "b": data["b"],
+                "sigma": data["sigma"]
+            }
+        else:
+            print("Nema istorije treninga. Pokrećem novi trening...")
+            from train import Trainer
+
+            trainer = Trainer(n_iters=600, seed=0)
+            trained, log = trainer.train(verbose=True)
+            trainer.save(model_path)
+
     else:
-        print(f"Nema {model_path}; treniram brzo (100 iter) samo za demo...")
+        print("Nema istrenirane politike. Pokrećem trening...")
+
         from train import Trainer
-        trainer = Trainer(n_iters=100, seed=0)
+
+        trainer = Trainer(n_iters=600, seed=0)
         trained, log = trainer.train(verbose=True)
         trainer.save(model_path)
 
@@ -217,7 +237,7 @@ if __name__ == "__main__":
     ev = Evaluator(trained, log, seed_demo=123)
     ev.print_demo(untrained)
 
-    print("\nProsječan zbir nagrada po danu (30 novih dana, bez šuma u akciji):")
+    print("\nProsječan zbir nagrada po danu (30 novih dana):")
     print(f"  netreniran : {ev.avg_return('policy', untrained):9.1f}")
     print(f"  termostat  : {ev.avg_return('thermostat'):9.1f}")
     print(f"  treniran   : {ev.avg_return('policy', trained):9.1f}")
