@@ -145,7 +145,7 @@ class Evaluator:
         fig, ax = plt.subplots(2, 3, figsize=(17, 9))
 
         # 1. Krive učenja
-        for log, name in [(fixed_log, "Fiksna sigma"),
+        for log, name in [(fixed_log, "Sigma (rucno)"),
                         (learned_log, "Naučena sigma")]:
             r = np.array(log["ret"])
             ax[0, 0].plot(r, alpha=0.2)
@@ -161,7 +161,7 @@ class Evaluator:
         ax[0, 0].grid()
 
         # 2. Temperatura
-        ax[0, 1].plot(hours, A["T"], label="Fiksna sigma")
+        ax[0, 1].plot(hours, A["T"], label="Sigma (rucno)")
         ax[0, 1].plot(hours, B["T"], label="Naučena sigma")
         ax[0, 1].plot(hours, C["T"], label="Termostat")
         ax[0, 1].axhline(Room.T_CILJ, ls="--", label="Ciljna temperatura")
@@ -172,7 +172,7 @@ class Evaluator:
         ax[0, 1].grid()
 
         # 3. Akcije
-        ax[0, 2].plot(hours, A["a"], label="Fiksna sigma")
+        ax[0, 2].plot(hours, A["a"], label="Sigma (rucno)")
         ax[0, 2].plot(hours, B["a"], label="Naučena sigma")
         ax[0, 2].plot(hours, C["a"], label="Termostat")
         ax[0, 2].set_title("Snaga klime")
@@ -193,7 +193,7 @@ class Evaluator:
         ax[1, 0].grid()
 
         # 5. Sigma
-        ax[1, 1].plot(fixed_log["sigma"], label="Fiksna sigma")
+        ax[1, 1].plot(fixed_log["sigma"], label="Sigma (rucno)")
         ax[1, 1].plot(learned_log["sigma"], label="Naučena sigma")
         ax[1, 1].set_title("Sigma kroz trening")
         ax[1, 1].set_xlabel("Iteracija")
@@ -201,7 +201,7 @@ class Evaluator:
         ax[1, 1].grid()
 
         # 6. Potrošnja
-        labels = ["Fiksna sigma", "Naučena sigma", "Termostat"]
+        labels = ["Sigma (rucno)", "Naučena sigma", "Termostat"]
         energy = [
             np.sum(A["a"]**2),
             np.sum(B["a"]**2),
@@ -283,7 +283,7 @@ if __name__ == "__main__":
     print("-----------------------------------")
 
     for name, values in [
-        ("Fiksna sigma", fixed_returns),
+        ("Sigma (rucno)", fixed_returns),
         ("Naucena sigma", learned_returns),
         ("Termostat", thermostat_returns)
     ]:

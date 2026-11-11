@@ -71,7 +71,7 @@ data = [fixed_values, learned_values]
 
 ax.boxplot(
     data,
-    tick_labels=["Fiksna sigma", "Naučena sigma"],
+    tick_labels=["Sigma (rucno)", "Naučena sigma"],
     showmeans=True
 )
 
