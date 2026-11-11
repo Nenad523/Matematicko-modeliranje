@@ -221,11 +221,40 @@ class Evaluator:
 
         print(f"Grafikon sačuvan: {path}")
 
+    def evaluate_returns(self, kind, policy=None, n=30):
+        totals = []
 
+        for i in range(n):
+            room = Room(seed=1000 + i)
+            s = room.reset()
+            x1, x2 = float(s[0]), float(s[1])
+
+            thermostat = OnOffThermostat() if kind == "thermostat" else None
+
+            if thermostat:
+                thermostat.reset()
+
+            total = 0.0
+            done = False
+
+            while not done:
+                if kind == "policy":
+                    a = policy.mu(x1, x2)
+                else:
+                    a = thermostat.act(room.T_soba, room.T_CILJ)
+
+                s_next, r, done, _ = room.step(a)
+                total += r
+                x1, x2 = float(s_next[0]), float(s_next[1])
+
+            totals.append(total)
+
+        return np.array(totals)
 
 # =====================================================================
 # Ako se fajl pokreće direktno: učítaj politiku, demo + grafikoni (nece se prikazati grafici 1,4,5 jer nema istorije)
 # =====================================================================
+
 if __name__ == "__main__":
 
     untrained = Policy(seed=0)
@@ -245,14 +274,33 @@ if __name__ == "__main__":
     fixed_ev = Evaluator(fixed, fixed_log, seed_demo=123)
     learned_ev = Evaluator(learned, learned_log, seed_demo=123)
 
-    print("\nPROSEČAN POVRAT (30 novih dana)")
-    print(f"Netreniran:       {fixed_ev.avg_return('policy', untrained):.1f}")
-    print(f"Termostat:        {fixed_ev.avg_return('thermostat'):.1f}")
-    print(f"Fiksna sigma:     {fixed_ev.avg_return('policy', fixed):.1f}")
-    print(f"Naučena sigma:    {learned_ev.avg_return('policy', learned):.1f}")
+    # Evaluacija na 30 istih testnih dana
+    fixed_returns = fixed_ev.evaluate_returns("policy", fixed)
+    learned_returns = learned_ev.evaluate_returns("policy", learned)
+    thermostat_returns = fixed_ev.evaluate_returns("thermostat")
+
+    print("\nREZULTATI EVALUACIJE (30 dana)")
+    print("-----------------------------------")
+
+    for name, values in [
+        ("Fiksna sigma", fixed_returns),
+        ("Naucena sigma", learned_returns),
+        ("Termostat", thermostat_returns)
+    ]:
+        print(
+            f"{name:15s} | "
+            f"prosek: {np.mean(values):8.2f} | "
+            f"std: {np.std(values):8.2f}"
+        )
+
+    difference = learned_returns - fixed_returns
+
+    print("-----------------------------------")
+    print(f"Razlika (naucena - fiksna): {np.mean(difference):.2f}")
 
     fixed_ev.make_comparison_plots(
         fixed, fixed_log,
         learned, learned_log,
         untrained
     )
+
