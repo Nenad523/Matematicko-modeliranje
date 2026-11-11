@@ -1,3 +1,4 @@
+
 """
 Povezuje svijet (environment.Room) i mozak (policy.Policy) u petlju učenja.
 Sadrži klasu Trainer koja:
@@ -6,10 +7,10 @@ Sadrži klasu Trainer koja:
   - grupiše više epizoda (batch) radi manje varijanse,
   - normalizuje povrate,
   - ažurira težine mreže (gradijentni uspon),
-  - smanjuje sigma po rasporedu,
+  - omogućava ručno podešavanje ili učenje sigme,
   - bilježi (logging) sve što treba za izvještaj.
 
-Pokretanje:  python training.py
+Pokretanje:  python train.py
 """
 
 import os
@@ -39,24 +40,29 @@ class Trainer:
     """
     Petlja učenja po algoritmu REINFORCE sa Gausovom politikom.
 
-    Jedan iter = batch_eps epizoda (dana). Za svaku epizodu:
-        1. reset okoline
-        2. agent bira akciju a ~ N(mu, sigma^2)
-        3. okolina vraća (s', r, done, info)
-        4. pamtimo (x1, x2, a, m, r)
-    Nakon svih epizoda u batch-u:
-        5. računamo G_t za svaki korak svake epizode
-        6. spajamo sve korake u jedan batch
-        7. normalizujemo G preko cijelog batch-a (smanjuje varijansu)
-        8. policy.update(batch, sigma, alpha)  -> gradijentni uspon
-        9. sigma *= sigma_decay ** batch_eps  (opada po epizodi)
+    learn_sigma=True:
+        Mreža uči standardnu devijaciju sigma.
+
+    learn_sigma=False:
+        Sigma je ručno zadana i smanjuje se po rasporedu.
     """
 
-    def __init__(self, env=None, policy=None, n_iters=600, batch_eps=5,
-                gamma=0.99, alpha=0.1, sigma0=1.0,
-                sigma_decay=0.9985, sigma_min=0.05,
-                learn_sigma=True, seed=0):
-        # okolina i politika (mogu se ubaciti spolja radi testiranja)
+    def __init__(
+        self,
+        env=None,
+        policy=None,
+        n_iters=600,
+        batch_eps=5,
+        gamma=0.99,
+        alpha=0.1,
+        sigma0=1.0,
+        sigma_decay=0.9985,
+        sigma_min=0.05,
+        learn_sigma=True,
+        seed=0
+    ):
+
+        # okolina i politika
         self.env = env if env is not None else Room(seed=seed)
         self.policy = policy if policy is not None else Policy(seed=seed)
 
@@ -64,15 +70,18 @@ class Trainer:
         self.batch_eps = batch_eps
         self.gamma = gamma
         self.alpha = alpha
+
         self.sigma = sigma0
         self.sigma_decay = sigma_decay
         self.sigma_min = sigma_min
+
         self.learn_sigma = learn_sigma
-        
+
         # logging
         self.log = {
-            "ret": [],       # prosječan sirov zbir nagrada po iteraciji
+            "ret": [],
             "w1": [], "w2": [], "b": [],
+            "v1": [], "v2": [], "c": [],
             "sigma": [],
         }
 
@@ -89,7 +98,8 @@ class Trainer:
         while not done:
 
             a, u, m, sigma = self.policy.act(
-                x1, x2,
+                x1,
+                x2,
                 learn_sigma=self.learn_sigma,
                 fixed_sigma=self.sigma
             )
@@ -99,22 +109,26 @@ class Trainer:
             steps.append((x1, x2, u, m, sigma, r))
 
             total += r
+
             x1, x2 = float(s_next[0]), float(s_next[1])
 
         return steps, total
 
-
     # Jedna iteracija treninga (batch od batch_eps epizoda)
     def train_iteration(self):
+
         batch, rets = [], []
 
         for _ in range(self.batch_eps):
+
             steps, total = self.play_day()
+
             batch.extend(returns_to_go(steps, self.gamma))
             rets.append(total)
 
-        # Normalizacija povrata preko cijelog batch-a
+        # Normalizacija povrata preko CIJELOG batch-a
         Gs = np.array([t[-1] for t in batch], dtype=np.float64)
+
         Gs = (Gs - Gs.mean()) / (Gs.std() + 1e-8)
 
         batch = [
@@ -131,37 +145,57 @@ class Trainer:
 
         # Sigma opada samo kada se ručno podešava
         if not self.learn_sigma:
+
             self.sigma = max(
                 self.sigma * self.sigma_decay ** self.batch_eps,
                 self.sigma_min
             )
 
-        return float(np.mean(rets))
+            avg_sigma = self.sigma
+
+        else:
+
+            avg_sigma = np.mean([t[4] for t in batch])
+
+        return float(np.mean(rets)), float(avg_sigma)
 
     # -----------------------------------------------------------------
     # Glavna petlja
     # -----------------------------------------------------------------
     def train(self, verbose=True):
+
         for it in range(self.n_iters):
-            mean_ret = self.train_iteration()
+
+            mean_ret, avg_sigma = self.train_iteration()
 
             self.log["ret"].append(mean_ret)
+
             self.log["w1"].append(self.policy.w1)
             self.log["w2"].append(self.policy.w2)
             self.log["b"].append(self.policy.b)
-            self.log["sigma"].append(self.sigma)
+
+            self.log["v1"].append(self.policy.v1)
+            self.log["v2"].append(self.policy.v2)
+            self.log["c"].append(self.policy.c)
+
+            self.log["sigma"].append(avg_sigma)
 
             if verbose and (it % 25 == 0 or it == self.n_iters - 1):
-                print(f"iter {it:4d} | povrat {mean_ret:9.1f} | "
-                      f"sigma {self.sigma:.3f} | "
-                      f"w1 {self.policy.w1:+.3f} "
-                      f"w2 {self.policy.w2:+.3f} "
-                      f"b {self.policy.b:+.3f}")
+
+                print(
+                    f"iter {it:4d} | "
+                    f"povrat {mean_ret:9.1f} | "
+                    f"sigma {avg_sigma:.3f} | "
+                    f"w1 {self.policy.w1:+.3f} "
+                    f"w2 {self.policy.w2:+.3f} "
+                    f"b {self.policy.b:+.3f}"
+                )
+
         return self.policy, self.log
 
-
-    # Čuvanje naučenenih podataka
+    # Čuvanje naučenih podataka
     def save(self, path="results/trained.npz"):
+
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
         self.policy.save(path)
@@ -172,6 +206,9 @@ class Trainer:
             w1=self.log["w1"],
             w2=self.log["w2"],
             b=self.log["b"],
+            v1=self.log["v1"],
+            v2=self.log["v2"],
+            c=self.log["c"],
             sigma=self.log["sigma"]
         )
 
@@ -180,6 +217,11 @@ class Trainer:
 
 # Ako se fajl pokreće direktno: istreniraj i sačuvaj
 if __name__ == "__main__":
-    trainer = Trainer(seed=0)
+
+    trainer = Trainer(
+        seed=0,
+        learn_sigma=True
+    )
+
     trainer.train(verbose=True)
     trainer.save("results/trained.npz")
