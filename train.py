@@ -23,10 +23,12 @@ from policy import Policy
 def returns_to_go(steps, gamma):
     """G_t unazad, zasebno za jednu epizodu."""
     out, G = [], 0.0
-    for (x1, x2, a, m, r) in reversed(steps):
+
+    for (x1, x2, u, m, sigma, r) in reversed(steps):
         G = r + gamma * G
-        out.append((x1, x2, a, m, G))
-    out.reverse()   # vraćamo u hronološki red
+        out.append((x1, x2, u, m, sigma, G))
+
+    out.reverse()
     return out
 
 
@@ -50,8 +52,10 @@ class Trainer:
         9. sigma *= sigma_decay ** batch_eps  (opada po epizodi)
     """
 
-    def __init__(self, env=None, policy=None, n_iters=600, batch_eps=5, gamma=0.99,
-                alpha=0.1, sigma0=1.0, sigma_decay=0.9985,sigma_min=0.05, seed=0):
+    def __init__(self, env=None, policy=None, n_iters=600, batch_eps=5,
+                gamma=0.99, alpha=0.1, sigma0=1.0,
+                sigma_decay=0.9985, sigma_min=0.05,
+                learn_sigma=True, seed=0):
         # okolina i politika (mogu se ubaciti spolja radi testiranja)
         self.env = env if env is not None else Room(seed=seed)
         self.policy = policy if policy is not None else Policy(seed=seed)
@@ -63,7 +67,8 @@ class Trainer:
         self.sigma = sigma0
         self.sigma_decay = sigma_decay
         self.sigma_min = sigma_min
-
+        self.learn_sigma = learn_sigma
+        
         # logging
         self.log = {
             "ret": [],       # prosječan sirov zbir nagrada po iteraciji
