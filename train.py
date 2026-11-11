@@ -200,8 +200,10 @@ class Trainer:
 
         self.policy.save(path)
 
+        log_path = path.replace(".npz", "_log.npz")
+
         np.savez(
-            "results/training_log.npz",
+            log_path,
             ret=self.log["ret"],
             w1=self.log["w1"],
             w2=self.log["w2"],
@@ -212,16 +214,23 @@ class Trainer:
             sigma=self.log["sigma"]
         )
 
-        print("Model i istorija treninga su sačuvani.")
+        print(f"Model i istorija sačuvani: {path}")
 
 
 # Ako se fajl pokreće direktno: istreniraj i sačuvaj
 if __name__ == "__main__":
 
-    trainer = Trainer(
-        seed=0,
-        learn_sigma=True
-    )
+    for learn_sigma in [False, True]:
 
-    trainer.train(verbose=True)
-    trainer.save("results/trained.npz")
+        name = "learned" if learn_sigma else "fixed"
+
+        trainer = Trainer(
+            n_iters=600,
+            batch_eps=5,
+            seed=0,
+            sigma0=0.525,
+            learn_sigma=learn_sigma
+        )
+
+        trainer.train(verbose=True)
+        trainer.save(f"results/{name}.npz")

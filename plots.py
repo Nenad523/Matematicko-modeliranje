@@ -127,69 +127,100 @@ class Evaluator:
 
 
     # 6 grafikona
-    def make_plots(self, untrained, path="results/grafikoni.png"):
+    
+    def make_comparison_plots(self, fixed, fixed_log, learned, learned_log,
+                            untrained, path="results/poredjenje.png"):
+
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
-        A = self.run_day("policy", untrained)
-        B = self.run_day("policy", self.policy)
-        C = self.run_day("thermostat")
+        fixed_ev = Evaluator(fixed, fixed_log)
+        learned_ev = Evaluator(learned, learned_log)
+
+        A = fixed_ev.run_day("policy", fixed)
+        B = learned_ev.run_day("policy", learned)
+        C = fixed_ev.run_day("thermostat")
+
         hours = A["t"]
 
-        fig, ax = plt.subplots(2, 3, figsize=(15, 8))
+        fig, ax = plt.subplots(2, 3, figsize=(17, 9))
 
-        # 1. Kriva učenja
-        r = np.array(self.log["ret"])
-        ax[0, 0].plot(r, alpha=0.3)
-        k = 15
-        if len(r) >= k:
-            ax[0, 0].plot(np.arange(k - 1, len(r)),
-                          np.convolve(r, np.ones(k) / k, "valid"),
-                          label="pokretni prosjek")
-        ax[0, 0].set(title="Kriva učenja",
-                     xlabel="iteracija (batch od 5 dana)",
-                     ylabel="zbir nagrada po danu")
-        ax[0, 0].set_yscale("symlog")
+        # 1. Krive učenja
+        for log, name in [(fixed_log, "Fiksna sigma"),
+                        (learned_log, "Naučena sigma")]:
+            r = np.array(log["ret"])
+            ax[0, 0].plot(r, alpha=0.2)
+            k = 15
+            if len(r) >= k:
+                smooth = np.convolve(r, np.ones(k)/k, "valid")
+                ax[0, 0].plot(np.arange(k-1, len(r)), smooth, label=name)
+
+        ax[0, 0].set_title("Kriva učenja")
+        ax[0, 0].set_xlabel("Iteracija")
+        ax[0, 0].set_ylabel("Povrat")
         ax[0, 0].legend()
+        ax[0, 0].grid()
 
         # 2. Temperatura
-        ax[0, 1].plot(hours, A["T_spolja"], "k:", label="spolja")
-        ax[0, 1].plot(hours, A["T"], label="netreniran")
-        ax[0, 1].plot(hours, C["T"], label="termostat")
-        ax[0, 1].plot(hours, B["T"], label="treniran")
-        ax[0, 1].axhline(Room.T_CILJ, color="gray", ls="--", label="cilj")
-        ax[0, 1].set(title="Temperatura u sobi",
-                     xlabel="sat", ylabel="°C")
+        ax[0, 1].plot(hours, A["T"], label="Fiksna sigma")
+        ax[0, 1].plot(hours, B["T"], label="Naučena sigma")
+        ax[0, 1].plot(hours, C["T"], label="Termostat")
+        ax[0, 1].axhline(Room.T_CILJ, ls="--", label="Ciljna temperatura")
+        ax[0, 1].set_title("Temperatura sobe")
+        ax[0, 1].set_xlabel("Sat")
+        ax[0, 1].set_ylabel("°C")
         ax[0, 1].legend()
+        ax[0, 1].grid()
 
-        # 3. Snaga klime
-        ax[0, 2].plot(hours, A["a"], label="netreniran", alpha=0.7)
-        ax[0, 2].plot(hours, C["a"], label="termostat", alpha=0.7)
-        ax[0, 2].plot(hours, B["a"], label="treniran")
-        ax[0, 2].set(title="Snaga klime",
-                     xlabel="sat", ylabel="akcija [-1, 1]")
+        # 3. Akcije
+        ax[0, 2].plot(hours, A["a"], label="Fiksna sigma")
+        ax[0, 2].plot(hours, B["a"], label="Naučena sigma")
+        ax[0, 2].plot(hours, C["a"], label="Termostat")
+        ax[0, 2].set_title("Snaga klime")
+        ax[0, 2].set_xlabel("Sat")
+        ax[0, 2].set_ylabel("Akcija")
         ax[0, 2].legend()
+        ax[0, 2].grid()
 
-        # 4. Težine + b
-        ax[1, 0].plot(self.log["w1"], label="w1")
-        ax[1, 0].plot(self.log["w2"], label="w2")
-        ax[1, 0].plot(self.log["b"], label="b")
-        ax[1, 0].set(title="Težine kroz trening", xlabel="iteracija")
-        ax[1, 0].legend()
+        # 4. Težine
+        for key in ["w1", "w2", "b"]:
+            ax[1, 0].plot(fixed_log[key], label=f"{key} - fiksna")
+            ax[1, 0].plot(learned_log[key], "--",
+                        label=f"{key} - naučena")
 
-        # 5. sigma
-        ax[1, 1].plot(self.log["sigma"])
-        ax[1, 1].set(title="sigma kroz trening", xlabel="iteracija")
+        ax[1, 0].set_title("Težine kroz trening")
+        ax[1, 0].set_xlabel("Iteracija")
+        ax[1, 0].legend(fontsize=8)
+        ax[1, 0].grid()
 
-        # 6. Potrošnja struje
-        labels = ["netreniran", "termostat", "treniran"]
-        energy = [float(np.sum(X["a"] ** 2)) for X in (A, C, B)]
+        # 5. Sigma
+        ax[1, 1].plot(fixed_log["sigma"], label="Fiksna sigma")
+        ax[1, 1].plot(learned_log["sigma"], label="Naučena sigma")
+        ax[1, 1].set_title("Sigma kroz trening")
+        ax[1, 1].set_xlabel("Iteracija")
+        ax[1, 1].legend()
+        ax[1, 1].grid()
+
+        # 6. Potrošnja
+        labels = ["Fiksna sigma", "Naučena sigma", "Termostat"]
+        energy = [
+            np.sum(A["a"]**2),
+            np.sum(B["a"]**2),
+            np.sum(C["a"]**2)
+        ]
+
         ax[1, 2].bar(labels, energy)
-        ax[1, 2].set(title="Potrošnja struje (zbir a²)", ylabel="a²")
+        ax[1, 2].set_title("Potrošnja struje")
+        ax[1, 2].set_ylabel("Zbir a²")
+        ax[1, 2].tick_params(axis="x", rotation=15)
+        ax[1, 2].grid(axis="y")
 
+        fig.suptitle("Poređenje REINFORCE agenata", fontsize=16)
         plt.tight_layout()
-        plt.savefig(path, dpi=110)
+        plt.savefig(path, dpi=150)
         plt.close(fig)
-        print(f"Grafikoni sačuvani: {path}")
+
+        print(f"Grafikon sačuvan: {path}")
+
 
 
 # =====================================================================
@@ -197,49 +228,31 @@ class Evaluator:
 # =====================================================================
 if __name__ == "__main__":
 
-    model_path = "results/trained.npz"
-    log_path = "results/training_log.npz"
-
-    if os.path.exists(model_path):
-        trained = Policy(seed=0)
-        trained.load(model_path)
-
-        # Učitavanje istorije treninga
-        if os.path.exists(log_path):
-            data = np.load(log_path)
-
-            log = {
-                "ret": data["ret"],
-                "w1": data["w1"],
-                "w2": data["w2"],
-                "b": data["b"],
-                "sigma": data["sigma"]
-            }
-        else:
-            print("Nema istorije treninga. Pokrećem novi trening...")
-            from train import Trainer
-
-            trainer = Trainer(n_iters=600, seed=0)
-            trained, log = trainer.train(verbose=True)
-            trainer.save(model_path)
-
-    else:
-        print("Nema istrenirane politike. Pokrećem trening...")
-
-        from train import Trainer
-
-        trainer = Trainer(n_iters=600, seed=0)
-        trained, log = trainer.train(verbose=True)
-        trainer.save(model_path)
-
     untrained = Policy(seed=0)
 
-    ev = Evaluator(trained, log, seed_demo=123)
-    ev.print_demo(untrained)
+    fixed = Policy(seed=0)
+    fixed.load("results/fixed.npz")
 
-    print("\nProsječan zbir nagrada po danu (30 novih dana):")
-    print(f"  netreniran : {ev.avg_return('policy', untrained):9.1f}")
-    print(f"  termostat  : {ev.avg_return('thermostat'):9.1f}")
-    print(f"  treniran   : {ev.avg_return('policy', trained):9.1f}")
+    learned = Policy(seed=0)
+    learned.load("results/learned.npz")
 
-    ev.make_plots(untrained, path="results/grafikoni.png")
+    fixed_data = np.load("results/fixed_log.npz")
+    learned_data = np.load("results/learned_log.npz")
+
+    fixed_log = {key: fixed_data[key] for key in fixed_data.files}
+    learned_log = {key: learned_data[key] for key in learned_data.files}
+
+    fixed_ev = Evaluator(fixed, fixed_log, seed_demo=123)
+    learned_ev = Evaluator(learned, learned_log, seed_demo=123)
+
+    print("\nPROSEČAN POVRAT (30 novih dana)")
+    print(f"Netreniran:       {fixed_ev.avg_return('policy', untrained):.1f}")
+    print(f"Termostat:        {fixed_ev.avg_return('thermostat'):.1f}")
+    print(f"Fiksna sigma:     {fixed_ev.avg_return('policy', fixed):.1f}")
+    print(f"Naučena sigma:    {learned_ev.avg_return('policy', learned):.1f}")
+
+    fixed_ev.make_comparison_plots(
+        fixed, fixed_log,
+        learned, learned_log,
+        untrained
+    )
