@@ -78,41 +78,63 @@ class Trainer:
 
     # Jedna epizoda (jedan dan)
     def play_day(self):
-        """Odigra jedan dan i vrati listu koraka i sirov zbir nagrada."""
+        """Odigra jedan dan i vrati listu koraka i sirovi zbir nagrada."""
+
         s = self.env.reset()
         x1, x2 = float(s[0]), float(s[1])
 
         steps, total = [], 0.0
         done = False
+
         while not done:
-            a, m = self.policy.act(x1, x2, self.sigma)
+
+            a, u, m, sigma = self.policy.act(
+                x1, x2,
+                learn_sigma=self.learn_sigma,
+                fixed_sigma=self.sigma
+            )
+
             s_next, r, done, info = self.env.step(a)
-            steps.append((x1, x2, a, m, r))
+
+            steps.append((x1, x2, u, m, sigma, r))
+
             total += r
             x1, x2 = float(s_next[0]), float(s_next[1])
+
         return steps, total
 
 
     # Jedna iteracija treninga (batch od batch_eps epizoda)
     def train_iteration(self):
         batch, rets = [], []
+
         for _ in range(self.batch_eps):
             steps, total = self.play_day()
             batch.extend(returns_to_go(steps, self.gamma))
             rets.append(total)
 
-        # Normalizacija povrata preko CIJELOG batch-a
+        # Normalizacija povrata preko cijelog batch-a
         Gs = np.array([t[-1] for t in batch], dtype=np.float64)
         Gs = (Gs - Gs.mean()) / (Gs.std() + 1e-8)
-        batch = [(x1, x2, a, m, g)
-                 for (x1, x2, a, m, _), g in zip(batch, Gs)]
 
-        # Ažuriranje težina
-        self.policy.update(batch, self.sigma, self.alpha)
+        batch = [
+            (x1, x2, u, m, sigma, g)
+            for (x1, x2, u, m, sigma, _), g in zip(batch, Gs)
+        ]
 
-        # Sigma opada po epizodi
-        self.sigma = max(self.sigma * self.sigma_decay ** self.batch_eps,
-                         self.sigma_min)
+        # Ažuriranje parametara politike
+        self.policy.update(
+            batch,
+            self.alpha,
+            learn_sigma=self.learn_sigma
+        )
+
+        # Sigma opada samo kada se ručno podešava
+        if not self.learn_sigma:
+            self.sigma = max(
+                self.sigma * self.sigma_decay ** self.batch_eps,
+                self.sigma_min
+            )
 
         return float(np.mean(rets))
 
