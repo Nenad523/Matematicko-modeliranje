@@ -51,13 +51,15 @@ class Trainer:
         self,
         env=None,
         policy=None,
-        n_iters=600,
+        n_iters=1250,
         batch_eps=5,
-        gamma=0.99,
-        alpha=0.1,
+        gamma=0.95,
+        alpha0=0.2,
+        alpha_decay=0.9994,
+        alpha_min=0.005,
         sigma0=1.0,
-        sigma_decay=0.9985,
-        sigma_min=0.05,
+        sigma_decay=0.9993,
+        sigma_min=0.03,
         learn_sigma=True,
         seed=0
     ):
@@ -69,8 +71,9 @@ class Trainer:
         self.n_iters = n_iters
         self.batch_eps = batch_eps
         self.gamma = gamma
-        self.alpha = alpha
-
+        self.alpha = alpha0
+        self.alpha_decay = alpha_decay
+        self.alpha_min = alpha_min
         self.sigma = sigma0
         self.sigma_decay = sigma_decay
         self.sigma_min = sigma_min
@@ -157,6 +160,10 @@ class Trainer:
 
             avg_sigma = np.mean([t[4] for t in batch])
 
+
+        # Alpha opada
+        self.alpha = max(self.alpha * self.alpha_decay ** self.batch_eps, self.alpha_min)
+
         return float(np.mean(rets)), float(avg_sigma)
 
     # -----------------------------------------------------------------
@@ -186,6 +193,7 @@ class Trainer:
                     f"iter {it:4d} | "
                     f"povrat {mean_ret:9.1f} | "
                     f"sigma {avg_sigma:.3f} | "
+                    f"alpha {self.alpha:.3f} | "
                     f"w1 {self.policy.w1:+.3f} "
                     f"w2 {self.policy.w2:+.3f} "
                     f"b {self.policy.b:+.3f}"
@@ -225,10 +233,6 @@ if __name__ == "__main__":
         name = "learned" if learn_sigma else "fixed"
 
         trainer = Trainer(
-            n_iters=600,
-            batch_eps=5,
-            seed=0,
-            sigma0=0.525,
             learn_sigma=learn_sigma
         )
 
