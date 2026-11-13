@@ -100,14 +100,14 @@ class Trainer:
 
         while not done:
 
-            a, u, m, sigma = self.policy.act(
+            u, m, sigma = self.policy.act(
                 x1,
                 x2,
                 learn_sigma=self.learn_sigma,
                 fixed_sigma=self.sigma
             )
 
-            s_next, r, done, info = self.env.step(a)
+            s_next, r, done, info = self.env.step(u)
 
             steps.append((x1, x2, u, m, sigma, r))
 

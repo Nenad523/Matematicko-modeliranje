@@ -50,9 +50,8 @@ class Policy:
 
         eps = self.rng.standard_normal()
         u = m + sigma * eps
-        a = np.tanh(u)
 
-        return a, u, m, sigma
+        return u, m, sigma
 
     def log_prob(self, x1, x2, u, sigma):
         '''
@@ -85,9 +84,7 @@ class Policy:
         for (x1, x2, u, m, sigma, G) in batch:
 
             # Gradijenti za mi
-            delta_mu = (
-                (u - m) / sigma**2
-            ) * (1 - m**2) * G
+            delta_mu = ((u - m) / sigma**2) * (1 - m**2) * G
 
             g1 += delta_mu * x1
             g2 += delta_mu * x2
