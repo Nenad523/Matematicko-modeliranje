@@ -51,22 +51,23 @@ class Trainer:
         self,
         env=None,
         policy=None,
-        n_iters=1250,
-        batch_eps=5,
+        n_iters=500,
+        batch_eps=7,
         gamma=0.95,
         alpha0=0.2,
-        alpha_decay=0.9994,
-        alpha_min=0.005,
+        alpha_decay=0.9995,
+        alpha_min=0.01,
         sigma0=1.0,
         sigma_decay=0.9993,
         sigma_min=0.03,
         learn_sigma=True,
-        seed=0
+        seed=0,
+        N=8
     ):
 
         # okolina i politika
         self.env = env if env is not None else Room(seed=seed)
-        self.policy = policy if policy is not None else Policy(seed=seed)
+        self.policy = policy if policy is not None else Policy(seed=seed, N=N)
 
         self.n_iters = n_iters
         self.batch_eps = batch_eps
@@ -83,9 +84,14 @@ class Trainer:
         # logging
         self.log = {
             "ret": [],
-            "w1": [], "w2": [], "b": [],
-            "v1": [], "v2": [], "c": [],
+            "A": [],      # lista matrica (N,2) — jedna po iteraciji
+            "c": [],      # lista vektora (N,)
+            "w": [],      # lista vektora (N,)
+            "b": [],      # lista skalara
+            "v": [],      # lista vektora (N,)
+            "d": [],      # lista skalara
             "sigma": [],
+            "alpha": [],  # dodaj ako želiš da vidiš α na grafikonu
         }
 
     # Jedna epizoda (jedan dan)
@@ -177,15 +183,17 @@ class Trainer:
 
             self.log["ret"].append(mean_ret)
 
-            self.log["w1"].append(self.policy.w1)
-            self.log["w2"].append(self.policy.w2)
+            # kopije! (da se ne mijenjaju kroz reference)
+            self.log["A"].append(self.policy.A.copy())
+            self.log["c"].append(self.policy.c.copy())
+            self.log["w"].append(self.policy.w.copy())
             self.log["b"].append(self.policy.b)
 
-            self.log["v1"].append(self.policy.v1)
-            self.log["v2"].append(self.policy.v2)
-            self.log["c"].append(self.policy.c)
+            self.log["v"].append(self.policy.v.copy())
+            self.log["d"].append(self.policy.d)
 
             self.log["sigma"].append(avg_sigma)
+            self.log["alpha"].append(self.alpha)   # ako si dodao
 
             if verbose and (it % 25 == 0 or it == self.n_iters - 1):
 
@@ -194,16 +202,12 @@ class Trainer:
                     f"povrat {mean_ret:9.1f} | "
                     f"sigma {avg_sigma:.3f} | "
                     f"alpha {self.alpha:.3f} | "
-                    f"w1 {self.policy.w1:+.3f} "
-                    f"w2 {self.policy.w2:+.3f} "
-                    f"b {self.policy.b:+.3f}"
                 )
 
         return self.policy, self.log
 
     # Čuvanje naučenih podataka
     def save(self, path="results/trained.npz"):
-
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
         self.policy.save(path)
@@ -212,14 +216,15 @@ class Trainer:
 
         np.savez(
             log_path,
-            ret=self.log["ret"],
-            w1=self.log["w1"],
-            w2=self.log["w2"],
-            b=self.log["b"],
-            v1=self.log["v1"],
-            v2=self.log["v2"],
-            c=self.log["c"],
-            sigma=self.log["sigma"]
+            ret=np.array(self.log["ret"]),
+            A=np.array(self.log["A"]),     # shape (n_iters, N, 2)
+            c=np.array(self.log["c"]),     # shape (n_iters, N)
+            w=np.array(self.log["w"]),     # shape (n_iters, N)
+            b=np.array(self.log["b"]),     # shape (n_iters,)
+            v=np.array(self.log["v"]),     # shape (n_iters, N)
+            d=np.array(self.log["d"]),     # shape (n_iters,)
+            sigma=np.array(self.log["sigma"]),
+            alpha=np.array(self.log["alpha"]) if "alpha" in self.log else np.array([]),
         )
 
         print(f"Model i istorija sačuvani: {path}")
@@ -228,7 +233,7 @@ class Trainer:
 # Ako se fajl pokreće direktno: istreniraj i sačuvaj
 if __name__ == "__main__":
 
-    for learn_sigma in [False, True]:
+    for learn_sigma in [True]:
 
         name = "learned" if learn_sigma else "fixed"
 

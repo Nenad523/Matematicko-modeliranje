@@ -4,42 +4,42 @@ import numpy as np
 
 class Policy:
 
-    def __init__(self, seed=0):
+    def __init__(self, seed=0, N=4):
 
         self.rng = np.random.default_rng(seed)
+        self.N = N
 
-        # Parametri za mi
-        self.w1 = self.rng.normal(0, 0.1)
-        self.w2 = self.rng.normal(0, 0.1)
+        # Skriveni sloj: N čvorova, 2 ulaza
+        self.A = self.rng.normal(0, 2, size=(N, 2))   # (N, 2)
+        self.c = np.zeros(N)                              # (N,)
+
+        # mi
+        self.w = self.rng.normal(0, 2, size=N)         # (N,)
         self.b = 0.0
 
-        # Parametri za sigma
-        self.v1 = self.rng.normal(0, 0.1)
-        self.v2 = self.rng.normal(0, 0.1)
-        self.c = 0.0
+        # sigma
+        self.v = self.rng.normal(0, 2, size=N)         # (N,)
+        self.d = 0.0
+
+    def hidden(self, x1, x2):
+        s = self.A @ np.array([x1, x2]) + self.c
+        return np.tanh(s)
 
     def mu(self, x1, x2):
-        '''
-            Racunanje prvog izlaza mi.
-        '''
-
-        z = self.w1 * x1 + self.w2 * x2 + self.b
+        ''' Racunanje prvog izlaza mi. '''
+        h = self.hidden(x1, x2)
+        z = self.w @ h + self.b
         return np.tanh(z)
 
     def std(self, x1, x2):
-        '''
-            Racunjanje drugog izlaza sigma - standardna devijacija.
-        '''
-
-        z = self.v1 * x1 + self.v2 * x2 + self.c
+        ''' Racunjanje drugog izlaza sigma - standardna devijacija. '''
+        h = self.hidden(x1, x2)
+        z = self.v @ h + self.d
         s = 1 / (1 + np.exp(-z))
-
         return 0.05 + 0.95 * s
 
     def act(self, x1, x2, learn_sigma=True, fixed_sigma=0.2):
-        '''
-            Uzorkuje akcije iz Gausove raspodjele sa parametrima mu i sigma.
-        '''
+        ''' Uzorkuje akcije iz Gausove raspodjele sa parametrima mu i sigma. '''
 
         m = self.mu(x1, x2)
 
@@ -54,9 +54,7 @@ class Policy:
         return u, m, sigma
 
     def log_prob(self, x1, x2, u, sigma):
-        '''
-            Racuna logaritam gustine Gausove raspodjele.
-        '''
+        ''' Racuna logaritam gustine Gausove raspodjele. '''
 
         m = self.mu(x1, x2)
 
@@ -72,90 +70,89 @@ class Policy:
             Ako je learn_sigma=True, racuna gradijente svih sest parametara.
             Ako je learn_sigma=False, racuna samo gradijente parametara mi.
         '''
-
-        g1 = 0.0
-        g2 = 0.0
-        gb = 0.0
-
-        gv1 = 0.0
-        gv2 = 0.0
-        gc = 0.0
+        N = self.N
+        g_A = np.zeros((N, 2))
+        g_c = np.zeros(N)
+        g_w = np.zeros(N)
+        g_b = 0.0
+        g_v = np.zeros(N)
+        g_d = 0.0
 
         for (x1, x2, u, m, sigma, G) in batch:
+            # forward (ponovo, da dobijemo h)
+            h = self.hidden(x1, x2)                    # (N,)
+            z_mu = self.w @ h + self.b
+            mu = np.tanh(z_mu)
 
-            # Gradijenti za mi
-            delta_mu = ((u - m) / sigma**2) * (1 - m**2) * G
+            # μ grana
+            delta_mu = (u - mu) / sigma**2 * G
+            delta_zmu = delta_mu * (1 - mu**2)
 
-            g1 += delta_mu * x1
-            g2 += delta_mu * x2
-            gb += delta_mu
-
-            # Gradijenti za sigma
+            # σ grana
+            delta_zsigma = 0.0
             if learn_sigma:
-
+                delta_sigma = ((u - mu)**2 / sigma**3 - 1/sigma) * G
                 s = (sigma - 0.05) / 0.95
+                delta_zsigma = delta_sigma * 0.95 * s * (1 - s)
 
-                delta_sigma = (
-                    (u - m)**2 / sigma**3 - 1 / sigma
-                ) * 0.95 * s * (1 - s) * G
+            # izlazne težine
+            g_w += delta_zmu * h
+            g_b += delta_zmu
+            if learn_sigma:
+                g_v += delta_zsigma * h
+                g_d += delta_zsigma
 
-                gv1 += delta_sigma * x1
-                gv2 += delta_sigma * x2
-                gc += delta_sigma
+            # skriveni sloj — SABIRANJE dvije grane
+            delta_h = delta_zmu * self.w
+            if learn_sigma:
+                delta_h = delta_h + delta_zsigma * self.v
 
-        N = len(batch)
+            delta_s = delta_h * (1 - h**2)              # (N,)
 
-        return (
-            g1 / N, g2 / N, gb / N,
-            gv1 / N, gv2 / N, gc / N
-        )
+            g_A[:, 0] += delta_s * x1
+            g_A[:, 1] += delta_s * x2
+            g_c += delta_s
+
+        n = len(batch)
+        return (g_A/n, g_c/n, g_w/n, g_b/n, g_v/n, g_d/n)
+
 
     def update(self, batch, alpha, learn_sigma=True):
         '''
             Optimizacija parametara mreze kako bi se kretali u smjeru
             najbrzeg rasta funkcije cilja J.
         '''
+        g_A, g_c, g_w, g_b, g_v, g_d = self.grad(batch, learn_sigma)
 
-        g_w1, g_w2, g_b, g_v1, g_v2, g_c = self.grad(
-            batch, learn_sigma
-        )
-
-        self.w1 += alpha * g_w1
-        self.w2 += alpha * g_w2
+        self.A += alpha * g_A
+        self.c += alpha * g_c
+        self.w += alpha * g_w
         self.b += alpha * g_b
 
         if learn_sigma:
-            self.v1 += alpha * g_v1
-            self.v2 += alpha * g_v2
-            self.c += alpha * g_c
+            self.v += alpha * g_v
+            self.d += alpha * g_d
 
     def save(self, path):
         '''
             Cuvanje trenutnih parametara mreze u fajlu sa naznacenom putanjom.
         '''
-
-        np.savez(
-            path,
-            w1=self.w1,
-            w2=self.w2,
-            b=self.b,
-            v1=self.v1,
-            v2=self.v2,
-            c=self.c
-        )
+        np.savez(path,
+                 A=self.A, c=self.c,
+                 w=self.w, b=self.b,
+                 v=self.v, d=self.d,
+                 N=self.N)
 
     def load(self, path):
         '''
             Ucitavanje parametara mreze iz fajla sa naznacenom putanjom.
         '''
-
         data = np.load(path)
-
-        self.w1 = float(data["w1"])
-        self.w2 = float(data["w2"])
+        self.A = data["A"]
+        self.c = data["c"]
+        self.w = data["w"]
         self.b = float(data["b"])
-
-        if "v1" in data:
-            self.v1 = float(data["v1"])
-            self.v2 = float(data["v2"])
-            self.c = float(data["c"])
+        self.N = int(data["N"])
+        if "v" in data:
+            self.v = data["v"]
+            self.d = float(data["d"])
