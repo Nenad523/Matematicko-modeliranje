@@ -15,6 +15,10 @@ Prije ulaska u neuronsku mrežu, svi senzorski podaci se normalizuju (skaliraju)
 
 ---
 
+1. **Akcija 1 ($a_1 \in [-1.0, 1.0]$) — Snaga HVAC sistema (Klima uređaj):**
+   * **Mehanizam:** Kontroliše termičku energiju u zatvorenom krugu (vrti i hladi/grije postojeći vazduh u sobi, ali ne dovodi svjež vazduh spolja).
+   * **Opseg:** Negativne vrijednosti (`-1.0` do `0.0`) predstavljaju procenat snage hlađenja, pozitivne (`0.0` do `1.0`) procenat snage grijanja, dok `0.0` označava mirovanje.
+    
 2. **Akcija 2 ($a_2 \in [0.0, 1.0]$) — Otvorenost motorizovane ventilacione klapne:**
    * **Mehanizam:** Kontroliše metalna zakrilca (nalik venecijanerima) smještena unutar ventilacione cijevi, koja pokreće mali elektromotor (aktuator). Služi za izbacivanje ustajalog vazduha ($CO_2$) i ubacivanje svježeg vazduha spolja.
    * **Opseg i preslikavanje ugla:** Izlaz mreže (`0.0` do `1.0`) linearno se preslikava u fizički ugao zakretanja zakrilaca od **0° do 90°** ($\theta = a_2 \cdot 90^\circ$). Vrijednost `0.0` (0°) znači da su zakrilca spuštena i cijev je potpuno zatvorena, `0.5` (45°) da je otvorena dopola, a `1.0` (90°) da su zakrilca potpuno paralelna sa cijevi i vazduh slobodno struji.
