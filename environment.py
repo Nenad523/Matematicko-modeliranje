@@ -1,16 +1,20 @@
 """
 Svijet u kojem agent živi.
-Simulirana soba + on/off termostat kao mjerilo.
+
+Simulirana soba sa:
+  - HVAC aktuatorom (a1 ∈ [-1, 1])
+  - motorizovanom ventilacionom klapnom (a2 ∈ [0, 1])
+  - ljudima koji generišu toplotu i CO2
+  - dnevnim rasporedom prisutnih osoba
 
 Ugovor prema ostalim članovima:
-    Room.reset() -> s (np.array shape (2,), float64)
+    Room.reset() -> s (np.array shape (4,), float64)
     Room.step(a) -> (s_next, r, done, info)
-        a ∈ [-1, 1] realan koeficijent:
-            a = -1  -> maksimalno hlađenje
-            a =  0  -> klima isključena
-            a = +1  -> maksimalno grijanje
-            između -> proporcionalna snaga
-       info = {"T_soba", "T_spolja", "t", "T_cilj", "a"}
+        a = [a1, a2]  (ili skalar - tada se a2 tretira kao 0)
+            a1 ∈ [-1, 1]: HVAC koeficijent (grijanje/hlađenje)
+            a2 ∈ [ 0, 1]: ventilaciona klapna
+       info = {"T_soba", "T_spolja", "CO2_soba", "broj_ljudi",
+               "t", "T_cilj", "a1", "a2"}
 """
 
 import numpy as np
@@ -18,92 +22,180 @@ import numpy as np
 
 class Room:
     """
-    Fizika: Njutnov zakon hlađenja + proporcionalni doprinos klime.
-        dT_soba/dt = -K * (T_soba - T_spolja) + G * a
+    Fizika: 
+
+    dT/dt = -K*(T-T_out) - K_VENT*a2*(T-T_out) + G*a1 + PERSON_HEAT*n
+    dCO2/dt = CO2_GEN*n - (BASE_VENT + VENT_CO2*a2)*(CO2-CO2_out)
+
     Diskretizacija: Ojler, dt = 6 min = 0.1 h. Epizoda = 24 h = 240 koraka.
 
-    Stanje: s = [(T_soba - T_cilj)/3, (T_spolja - T_soba)/10]   (skalirano)
-    Akcija: a ∈ [-1, 1], realan koeficijent (nije diskretan skup!)
-    Nagrada: r = -(T_soba - T_cilj)^2 - W_STRUJA * a^2
     """
 
     # --- fizika ---
     DT = 0.1            # h, korak (6 min)
     K = 0.10            # 1/h, curenje toplote kroz zidove
     G = 1.50            # °C/h pri |a|=1, maksimalna snaga klime
-    T_CILJ = 21.0       # °C, željena temperatura
+    T_TARGET = 22.0       # °C, željena temperatura
+
+    # --- ventilacija ---
+    K_VENT = 0.20       # 1/h, dodatno curenje toplote
+    VENT_CO2 = 2.00     # 1/h, dodatno curenje CO2
+    BASE_VENT_CO2 = 0.20     # 1/h, minimalno curenje CO2
+
+    # -- ljudi ---
+    PERSON_HEAT = 0.05  # °C/h po osobi
+    CO2_GEN = 200.0       # ppm/h po osobi
+
+    CO2_OUT = 400.0        # ppm, spoljni CO2
 
     # --- skaliranje stanja (da tanh ne uđe u zasićenje) ---
-    SKALA = np.array([3.0, 10.0])
+    SCALE = np.array([5.0, 10.0, 500.0, 10.0])
     
     # --- dnevni ciklus spoljne temperature ---
-    T_SPOLJA_SREDNJA = 17.5
-    T_SPOLJA_AMPLITUDA = 7.5
-    T_SPOLJA_FAZA_H = 15.0     # sat maksimuma (popodne)
+    T_OUT_MEAN = 17.5
+    T_OUT_AMPL = 7.5
+    T_OUT_PHASE_H = 15.0     # sat maksimuma (popodne)
 
     # --- epizoda ---
     STEPS_PER_DAY = 240
-    W_STRUJA = 0.05
+
+    # -- nagrada ---
+    W_TEMP = 1.0
+    W_HVAC = 0.05
+    W_VENT = 0.02
+    W_CO2 = 0.20
+    CO2_LIMIT = 1000.0
+    CO2_REWARD_SCALE = 500.0
 
     def __init__(self, seed=None):
+
         self.rng = np.random.default_rng(seed)
         self.t = 0.0
-        self.T_soba = None
+        self.T_room = None
+        self.CO2_room = None
+        self.ppl_cnt = 0
         self.done = True
 
     # ---------- pomoćne ----------
-    def _T_spolja(self, t):
-        """Glatka sinusoida, period 24 h, maksimum u T_SPOLJA_FAZA_H."""
-        phase = 2.0 * np.pi * (t - (self.T_SPOLJA_FAZA_H - 6.0)) / 24.0
-        return self.T_SPOLJA_SREDNJA + self.T_SPOLJA_AMPLITUDA * np.sin(phase)
+    def _T_out(self, t):
+        """Glatka sinusoida, period 24 h, maksimum u T_OUT_PHASE_H."""
+
+        phase = 2.0 * np.pi * (t - (self.T_OUT_PHASE_H - 6.0)) / 24.0
+        
+        return self.T_OUT_MEAN + self.T_OUT_AMPL * np.sin(phase)
+
+    def _num_people(self, t):
+        """Broj ljudi u sobi, diskretna funkcija vremena."""
+
+        t_mod = t % 24.0
+        
+        if t_mod < 6.0:
+            return 2
+        elif t_mod < 8.0:
+            return 3
+        elif t_mod < 10.0:
+            return 1
+        elif t_mod < 16.0:
+            return 0
+        elif t_mod < 18.0:
+            return 1
+        elif t_mod < 20.0:
+            return 2
+        elif t_mod < 22.0:
+            return 3
+        else:
+            return 2
 
     def _state(self):
-        Ts = self.T_soba
-        Tsp = self._T_spolja(self.t)
-        s = np.array([Ts - self.T_CILJ, Tsp - Ts], dtype=np.float64)
-        return s / self.SKALA
+
+        T_room = self.T_room
+
+        T_out = self._T_out(self.t)
+
+        return np.array([
+            (T_room - self.T_TARGET)        / self.SCALE[0],
+            (T_out - T_room)                / self.SCALE[1],
+            (self.CO2_room - self.CO2_OUT)  / self.SCALE[2],
+            self.ppl_cnt                    / self.SCALE[3]
+        ], dtype=np.float64)
+
 
     # ---------- ugovor ----------
-    def reset(self, T0=None):
+    def reset(self, T0=None, CO2_0=None):
         """Novi dan sa nasumičnim početnim uslovima."""
+
         self.t = 0.0
+        
         if T0 is None:
-            self.T_soba = float(self.T_CILJ + self.rng.uniform(-3.0, 3.0))
+            self.T_room = float(self.T_TARGET + self.rng.uniform(-3.0, 3.0))
         else:
-            self.T_soba = float(T0)
+            self.T_room = float(T0)
+
+        if CO2_0 is None:
+            self.CO2_room = float(self.CO2_OUT + self.rng.uniform(0.0, 200.0))
+        else:
+            self.CO2_room = float(CO2_0)
+
+        self.ppl_cnt = self._num_people(self.t)
+        
         self.done = False
+
         return self._state()
 
     def step(self, action):
         """
         Odigraj jedan korak od 6 min.
-        action: realan broj iz [-1, 1] - koeficijent grijanja/hlađenja.
+        action: [a1, a2] u opsezima [-1,1] i [0,1]  (ili skalar → a2=0).
         Vrati (s_next, r, done, info).
         """
         assert not self.done, "Epizoda je završena; pozovi reset()."
 
         # akcija je realan koeficijent; ograničavamo na fizički opseg
-        a = float(np.clip(action, -1.0, 1.0))
+        arr = np.asarray(action, dtype=np.float64).ravel()
 
-        Tsp = self._T_spolja(self.t)
+        if arr.size == 1:
+            a1 = np.clip(arr[0], -1.0, 1.0)
+            a2 = 0.0
+        else:
+            a1 = np.clip(arr[0], -1.0, 1.0)
+            a2 = np.clip(arr[1], 0.0, 1.0)
 
-        # Ojler: eksplicitno, koristi trenutne vrijednosti.
-        # Klima doprinosi proporcionalno koeficijentu a (nije diskretno!).
-        dT = -self.K * (self.T_soba - Tsp) + self.G * a
-        self.T_soba = float(self.T_soba + self.DT * dT)
+        T_out = self._T_out(self.t)
+        n = self.ppl_cnt
+
+        dT = (- self.K * (self.T_room - T_out)
+              - self.K_VENT * a2 * (self.T_room - T_out)
+              + self.G * a1
+              + self.PERSON_HEAT * n)
+
+        vent = self.BASE_VENT_CO2 + self.VENT_CO2 * a2
+        dCO2 = (self.CO2_GEN * n - vent * (self.CO2_room - self.CO2_OUT))
+
+        self.T_room = float(self.T_room + self.DT * dT)
+        self.CO2_room = float(max(self.CO2_room + self.DT * dCO2, self.CO2_OUT))
         self.t += self.DT
+        self.ppl_cnt = self._num_people(self.t)
 
-        # nagrada: komfor + štednja (a^2 kažnjava i jako hlađenje i jako grijanje)
-        r = -(self.T_soba - self.T_CILJ) ** 2 - self.W_STRUJA * a ** 2
+        # nagrada:
+
+        r_temp = -self.W_TEMP * (self.T_room - self.T_TARGET) ** 2
+        r_hvac = -self.W_HVAC * a1 ** 2
+        r_vent = -self.W_VENT * a2 ** 2
+        r_co2 = -self.W_CO2 *   (max(0.0, self.CO2_room - self.CO2_LIMIT) / self.CO2_REWARD_SCALE) ** 2
+
+        r = r_temp + r_hvac + r_vent + r_co2
 
         self.done = self.t >= self.DT * self.STEPS_PER_DAY - 1e-9
 
         info = {
-            "T_soba": self.T_soba,
-            "T_spolja": Tsp,
-            "t": self.t,
-            "T_cilj": self.T_CILJ,
-            "a": a,        # klipovana akcija koja je zaista primijenjena
+            "T_room":     self.T_room,
+            "T_out":      T_out,
+            "CO2_room":   self.CO2_room,
+            "num_people": n,
+            "t":          self.t,
+            "T_target":   self.T_TARGET,
+            "a1":         a1,
+            "a2":         a2    
         }
         return self._state(), float(r), bool(self.done), info
 
@@ -111,45 +203,67 @@ class Room:
 class OnOffThermostat:
     """
     Običan on/off termostat sa histerezom - mjerilo za poređenje.
-    Vraća diskretnu akciju {-1, 0, +1} (to je njegova priroda),
-    ali Room.step prima bilo koji realan broj iz [-1, 1], pa je interfejs isti.
+      - a1: {-1, 0, +1} na osnovu temperature
+      - a2: { 0,  1  } na osnovu CO2 (uključi kad pređe limit + histerezu)
     """
 
-    def __init__(self, histereza=0.5, iskljuci_u_zoni=False):
-        self.histereza = histereza
-        self.iskljuci_u_zoni = iskljuci_u_zoni
-        self.a = 0.0
+    def __init__(self, hysteresis=0.5, off_in_zone=False,
+                 co2_limit=1000.0, co2_hysteresis=100.0):
+        self.hysteresis = hysteresis
+        self.off_in_zone = off_in_zone
+        self.co2_limit = co2_limit
+        self.co2_hysteresis = co2_hysteresis
+        self.a1 = 0.0
+        self.a2 = 0.0
 
     def reset(self):
-        self.a = 0.0
+        self.a1 = 0.0
+        self.a2 = 0.0
 
-    def act(self, T_soba, T_cilj):
-        if T_soba < T_cilj - self.histereza:
-            self.a = 1.0
-        elif T_soba > T_cilj + self.histereza:
-            self.a = -1.0
-        elif self.iskljuci_u_zoni:
-            self.a = 0.0
-        return self.a
+    def act(self, T_room, T_target, CO2_room):
+        # --- HVAC ---
+        if T_room < T_target - self.hysteresis:
+            self.a1 = 1.0
+        elif T_room > T_target + self.hysteresis:
+            self.a1 = -1.0
+        elif self.off_in_zone:
+            self.a1 = 0.0
+
+        # --- ventilacija ---
+        if CO2_room > self.co2_limit + self.co2_hysteresis:
+            self.a2 = 1.0
+        elif CO2_room < self.co2_limit - self.co2_hysteresis:
+            self.a2 = 0.0
+
+        return np.array([self.a1, self.a2])
 
 
-def run_thermostat(room, n_episodes=1, seed=999, histereza=0.5, iskljuci_u_zoni=False):
+
+def run_thermostat(room, n_episodes=1, seed=999, hysteresis=0.5, off_in_zone=False):
     """Odigraj on/off termostat u istoj sobi. Vrati trajektorije."""
     trajs = []
     for i in range(n_episodes):
         room.rng = np.random.default_rng(seed + i)
         room.reset()
-        th = OnOffThermostat(histereza=histereza, iskljuci_u_zoni=iskljuci_u_zoni)
+        th = OnOffThermostat(hysteresis=hysteresis, off_in_zone=off_in_zone)
         th.reset()
-        Ts, Tsp, acts, ts = [], [], [], []
+        T_rooms, T_outs, CO2s, acts, ts = [], [], [], [], []
         done = False
         while not done:
-            a = th.act(room.T_soba, room.T_CILJ)
+            a = th.act(room.T_room, room.T_TARGET, room.CO2_room)
             _, _, done, info = room.step(a)
-            Ts.append(info["T_soba"]); Tsp.append(info["T_spolja"])
-            acts.append(a); ts.append(info["t"])
-        trajs.append({"T_soba": np.array(Ts), "T_spolja": np.array(Tsp),
-                      "actions": np.array(acts), "t": np.array(ts)})
+            T_rooms.append(info["T_room"])
+            T_outs.append(info["T_out"])
+            CO2s.append(info["CO2_room"])
+            acts.append([info["a1"], info["a2"]])
+            ts.append(info["t"])
+        trajs.append({
+            "T_room":  np.array(T_rooms),
+            "T_out":   np.array(T_outs),
+            "CO2":     np.array(CO2s),
+            "actions": np.array(acts),   # shape (240, 2)
+            "t":       np.array(ts),
+        })
     return trajs
 
 
@@ -157,47 +271,54 @@ def run_thermostat(room, n_episodes=1, seed=999, histereza=0.5, iskljuci_u_zoni=
 # Brza provjera fizike (checklist prije predaje ostalima)
 # ============================================================
 if __name__ == "__main__":
-    # 1) soba bez klime prati spoljnu
+    print("=== PROŠIRENA SOBA: HVAC + ventilacija + CO2 + ljudi ===\n")
+
+    # 1) Bez ikakve kontrole (a1=0, a2=0) - temperatura prati spolja, CO2 eksplodira
     room = Room(seed=0)
     room.reset()
-    print("=== bez klime (a=0) ===")
-    for _ in range(240):
-        s, r, done, info = room.step(0.0)
-        if int(info["t"] * 10) % 60 == 0:
-            print(f"t={info['t']:5.1f}h  T_soba={info['T_soba']:6.2f}  "
-                  f"T_spolja={info['T_spolja']:6.2f}  r={r:8.3f}")
-        if done:
-            break
+    print("[1] Bez kontrole (a1=0, a2=0)")
+    for _ in range(Room.STEPS_PER_DAY):
+        s, r, done, info = room.step([0.0, 0.0])
+        if int(round(info["t"] * 10)) % 60 == 0:
+            print(f"  t={info['t']:5.1f}h  T={info['T_room']:6.2f}°C  "
+                  f"CO2={info['CO2_room']:7.1f}ppm  n={info['num_people']}")
+        if done: break
 
-    # 2) klima na maksimumu grije, na minimumu hladi
-    for a_fix, label in [(1.0, "max grijanje"), (-1.0, "max hlađenje")]:
-        room = Room(seed=0)
-        room.reset()
-        T0 = room.T_soba
-        for _ in range(240):
-            s, r, done, info = room.step(a_fix)
-            if done:
-                break
-        print(f"=== {label} (a={a_fix:+.1f}) ===  "
-              f"T_soba: {T0:.2f} -> {info['T_soba']:.2f}")
+    # 2) Samo HVAC (termostatski), a2=0 - CO2 raste bez ventilacije
+    print("\n[2] Samo HVAC (a1 iz termostata, a2=0):")
+    room = Room(seed=0); room.reset()
+    while not room.done:
+        if room.T_room < Room.T_TARGET - 0.5: a1 = 1.0
+        elif room.T_room > Room.T_TARGET + 0.5: a1 = -1.0
+        else: a1 = 0.0
+        _, _, done, info = room.step([a1, 0.0])
+    print(f"  kraj: T={info['T_room']:.2f}°C  "
+          f"CO2={info['CO2_room']:.0f}ppm  (vrlo visok CO2!)")
 
-    # 3) realan koeficijent između -1 i 1
-    print("=== realan koeficijent a=0.37 (blago grijanje) ===")
-    room = Room(seed=0)
-    room.reset()
-    T0 = room.T_soba
-    for _ in range(240):
-        s, r, done, info = room.step(0.37)
-        if done:
-            break
-    print(f"T_soba: {T0:.2f} -> {info['T_soba']:.2f}")
+    # 3) Puna ventilacija, bez HVAC-a (a1=0, a2=1) - CO2 nizak, temperatura bježi
+    print("\n[3] Puna ventilacija, bez HVAC (a1=0, a2=1):")
+    room = Room(seed=0); room.reset()
+    T_rooms, CO2s = [], []
+    while not room.done:
+        _, _, done, info = room.step([0.0, 1.0])
+        T_rooms.append(info["T_room"]); CO2s.append(info["CO2_room"])
+    print(f"  kraj: T={T_rooms[-1]:.2f}°C  CO2={CO2s[-1]:.0f}ppm")
+    print(f"  T min/max: {min(T_rooms):.2f}/{max(T_rooms):.2f}  "
+          f"CO2 max: {max(CO2s):.0f}ppm")
 
-    # 4) termostat, obje varijante
-    for zona in (False, True):
-        th = run_thermostat(Room(seed=0), n_episodes=1, seed=999,
-                            iskljuci_u_zoni=zona)[0]
-        err = float(np.sum((th["T_soba"] - Room.T_CILJ) ** 2))
-        cons = float(np.sum(th["actions"] ** 2))
-        print(f"=== termostat, iskljuci_u_zoni={zona} ===")
-        print(f"greška={err:.2f}, potrošnja Σa²={cons:.2f}, "
-              f"T_soba min/max={th['T_soba'].min():.2f}/{th['T_soba'].max():.2f}")
+    # 4) Bazna linija: on/off termostat (sa i bez histerezne zone za HVAC)
+    for zone in (False, True):
+        trajs = run_thermostat(Room(seed=0), n_episodes=1, seed=999,
+                               off_in_zone=zone)
+        th = trajs[0]
+        temp_err = float(np.sum((th["T_room"] - Room.T_TARGET) ** 2))
+        over     = np.maximum(0.0, th["CO2"] - Room.CO2_LIMIT)
+        co2_err  = float(np.sum(over ** 2))
+        print(f"\n[4] On/off termostat (off_in_zone={zone}):")
+        print(f"  temp greška Σ(T-22)² : {temp_err:8.2f}")
+        print(f"  CO2 prekoračenje² Σ  : {co2_err:8.1f}")
+        print(f"  T   min/max          : {th['T_room'].min():.2f}/{th['T_room'].max():.2f}")
+        print(f"  CO2 min/max          : {th['CO2'].min():.0f}/{th['CO2'].max():.0f}")
+        print(f"  prosječno a1², a2²   : "
+              f"{np.mean(th['actions'][:,0]**2):.3f}, "
+              f"{np.mean(th['actions'][:,1]**2):.3f}")
