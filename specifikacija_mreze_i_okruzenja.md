@@ -1,66 +1,122 @@
-# TEHNIČKA SPECIFIKACIJA MIMO SISTEMA I NEURONSKE MREŽE (4 – 8 – 4)
+# TEHNIČKA SPECIFIKACIJA OKRUŽENJA I NEURONSKE MREŽE (4 – H – 4)
 
-## 1. Ulazni parametri (Vektor stanja $s = [x_1, x_2, x_3, x_4]$)
-
-Prije ulaska u neuronsku mrežu, svi senzorski podaci se normalizuju (skaliraju) kako bi bili centrirani oko nule i malih vrijednosti. Time se osigurava numerička stabilnost i brža konvergencija tokom ručnog *backpropagation*-a.
-
-* **$x_1$ — Odstupanje unutrašnje temperature od cilja:** `(T_soba - T_target) / 5.0`
-  * **Konkretna upotreba:** Služi kao primarni senzor povratne sprege. Govori agentu da li je u prostoriji trenutno prevruće (pozitivan broj) ili prehladno (negativan broj) u odnosu na željenih 22.0°C.
-* **$x_2$ — Termički pritisak okruženja:** `(T_spoljna - T_soba) / 10.0`
-  * **Konkretna upotreba:** Mjeri razliku između spoljašnje i unutrašnje temperature. Prema Njutnovom zakonu hlađenja, ova razlika određuje brzinu kojom toplota prodire kroz zidove i ventilaciju. Omogućava agentu da reaguje proaktivno prije nego što se soba zagrije ili ohladi.
-* **$x_3$ — Nivo zagađenja vazduha ($CO_2$):** `(CO2_soba - 400.0) / 500.0`
-  * **Konkretna upotreba:** Mjeri koliko je vazduh u prostoriji ustajao u odnosu na idealan svjež vazduh (400 ppm). Kada ljudi borave u sobi, disanjem troše kiseonik i podižu $CO_2$, što mreži daje direktan signal da je potrebno provjetravanje.
-* **$x_4$ — Dinamički broj prisutnih osoba:** `broj_ljudi / 10.0`
-  * **Konkretna upotreba:** Normalizovan broj osoba u prostoriji (maksimalni kapacitet je 10 ljudi). Ovaj ulaz mreži javlja dvije ključne stvari: koliko dodatne toplote generišu ljudska tijela (oko 100W po osobi) i koliko će brzo rasti nivo $CO_2$, ali i koliko je stroga kazna za narušavanje komfora.
+> **Za člana 2 (mreža, `policy.py`): šta je izmijenjeno u odnosu na prethodnu verziju**
+>
+> 1. Skriveni sloj ima **H neurona** (parametar). Početna vrijednost je **H = 8**, ali kod mora raditi za bilo koje H. Ukupan broj parametara je **9H + 4** (za H = 8 to je 76).
+> 2. **σ ima donju granicu:** `σ = σ_min + softplus(z)`, sa `σ_min = 0.05`. Izvod po z ostaje `sigmoid(z)`, pa se formule iz `Izvodi.pdf` ne mijenjaju.
+> 3. Dodane su **preporuke za početne vrijednosti** težina (odjeljak 5), da trening krene stabilno.
+> 4. Dopunjen je **opis akcije 1** (klima), koji je nedostajao, i uklonjena je netačna tvrdnja da je otvorenost ventilacije ulaz (to je akcija).
+> 5. Opravdanje za veličinu mreže je prepisano (odjeljak 4). Nije tačno da veći broj neurona "raspršuje parametre pod uticajem šuma".
+> 6. Dodan je **sažetak formula za gradijent** (odjeljak 6). Izvodi su provjereni u `Izvodi.pdf`, osim tri sitne ispravke navedene u odjeljku 6.
+> 7. Ciljna temperatura u cijelom dokumentu je **22 °C** (kao u `environment.py`).
 
 ---
 
-2. **Akcija 2 ($a_2 \in [0.0, 1.0]$) — Otvorenost motorizovane ventilacione klapne:**
-   * **Mehanizam:** Kontroliše metalna zakrilca (nalik venecijanerima) smještena unutar ventilacione cijevi, koja pokreće mali elektromotor (aktuator). Služi za izbacivanje ustajalog vazduha ($CO_2$) i ubacivanje svježeg vazduha spolja.
-   * **Opseg i preslikavanje ugla:** Izlaz mreže (`0.0` do `1.0`) linearno se preslikava u fizički ugao zakretanja zakrilaca od **0° do 90°** ($\theta = a_2 \cdot 90^\circ$). Vrijednost `0.0` (0°) znači da su zakrilca spuštena i cijev je potpuno zatvorena, `0.5` (45°) da je otvorena dopola, a `1.0` (90°) da su zakrilca potpuno paralelna sa cijevi i vazduh slobodno struji.
-   * **Inženjerski sukob:** Otvaranje klapne ($a_2$) pročišćava vazduh od $CO_2$, ali istovremeno unosi spoljni vreli ili ledeni vazduh, što narušava unutrašnju temperaturu. Agent mora naučiti da precizno dozira ugao klapne i uskladi ga sa radom klime ($a_1$) uz minimalan utrošak energije.
+## 1. Ulazni parametri (vektor stanja $s = [x_1, x_2, x_3, x_4]$)
 
+Prije ulaska u mrežu, svi podaci se skaliraju da budu male vrijednosti oko nule. To sprječava zasićenje $\tanh$-a i stabilizuje ručni *backpropagation*.
+
+* **$x_1$ — odstupanje temperature od cilja:** `(T_soba - T_cilj) / 5.0`
+  * Glavni signal povratne sprege: pozitivno znači previše toplo, negativno previše hladno u odnosu na 22.0 °C.
+* **$x_2$ — razlika spoljne i unutrašnje temperature:** `(T_spoljna - T_soba) / 10.0`
+  * Prema Njutnovom zakonu hlađenja ova razlika određuje brzinu gubitka ili dobitka toplote kroz zidove i ventilaciju. Agent tako može djelovati unaprijed.
+* **$x_3$ — nivo CO₂:** `(CO2_soba - 400.0) / 500.0`
+  * Pokazuje koliko je vazduh ustajao u odnosu na svjež (400 ppm). Daje signal da je potrebno provjetravanje.
+  * *Napomena:* bez ventilacije vrijednost može preći 3, pa je preporučeno ograničiti je na $[-3, 3]$ ako se primijeti zasićenje.
+* **$x_4$ — broj prisutnih osoba:** `broj_ljudi / 10.0`
+  * Ljudi generišu toplotu (oko 100 W po osobi) i CO₂, a od njih zavisi i koliko se komfor računa.
+  * *Napomena:* u simulaciji je broj ljudi 0 do 3, pa je raspon ovog ulaza samo 0 do 0.3. Ako se pokaže da ima premalo uticaja, dogovoriti sa članom 1 skalu `/3`.
+
+---
+
+## 2. Akcije (2 akcije)
+
+1. **Akcija 1 ($a_1 \in [-1, 1]$) — klima (HVAC):**
+   * Vrijednost $-1$ znači puno hlađenje, $0$ isključeno, $+1$ puno grijanje. Okolina je povezuje s promjenom temperature preko koeficijenta $G$ (maksimalna snaga). Veća $|a_1|$ znači veću potrošnju energije, pa postoji kazna $-W_{HVAC}\,a_1^2$.
+
+2. **Akcija 2 ($a_2 \in [0, 1]$) — otvorenost motorizovane ventilacione klapne:**
+   * **Mehanizam:** metalna zakrilca u ventilacionoj cijevi pokreće mali aktuator. Služe za izbacivanje ustajalog vazduha (CO₂) i ubacivanje svježeg.
+   * **Preslikavanje:** izlaz $[0, 1]$ linearno odgovara uglu $\theta = a_2 \cdot 90^\circ$ ($0$ = zatvoreno, $0.5$ = pola, $1$ = potpuno otvoreno).
+   * **Inženjerski sukob:** otvaranje smanjuje CO₂, ali unosi spoljni topli ili hladni vazduh i remeti temperaturu. Agent mora uskladiti klapnu s radom klime uz minimalan utrošak energije.
+   * *Napomena o vremenu:* korak simulacije je 6 minuta, pa $a_2$ znači prosječnu otvorenost u tom koraku. Kratko provjetravanje je jedan do dva koraka s visokim $a_2$.
+
+**Granice akcija:** mreža daje neograničenu vrijednost iz Gausove raspodjele, a okolina je odsiječe (`clip`) na dozvoljeni opseg. U $\log\pi$ i u batchu se koristi **neodsječena** vrijednost $a$.
 
 ---
 
 ## 3. Izlazi neuronske mreže (4 izlaza: $\mu_1, \sigma_1, \mu_2, \sigma_2$)
 
-Pošto radimo u dvodimenzionalnom kontinualnom prostoru akcija, stohastička politika modeluje svaku akciju kao nezavisnu Gausovu (Normalnu) raspodjelu. Zbog toga mreža na izlazu ima **4 neurona** (po dva parametra za svaku akciju):
+Svaka akcija je nezavisna Gausova raspodjela, pa mreža ima **4 izlazna neurona**:
 
-| Izlazni neuron | Parametar | Aktivaciona funkcija | Opseg vrijednosti | Uloga u uzorkovanju akcije |
+| Izlaz | Parametar | Aktivacija | Opseg | Uloga |
 | :--- | :--- | :--- | :--- | :--- |
-| **Neuron 1** | $\mu_1$ (Srednja vrijednost za klimu) | $\tanh(z_1)$ | $[-1.0, 1.0]$ | Određuje ciljanu snagu grijanja ili hlađenja. |
-| **Neuron 2** | $\sigma_1$ (Devijacija za klimu) | $\text{Softplus}(z_2) = \ln(1 + e^{z_2})$ | $(0, +\infty)$ | Određuje nivo istraživanja (šuma) za rad klime u datom stanju. |
-| **Neuron 3** | $\mu_2$ (Srednja vrijednost za ventilaciju) | $\text{Sigmoid}(z_3) = \frac{1}{1 + e^{-z_3}}$ | $[0.0, 1.0]$ | Određuje ciljani procenat otvorenosti ventilacije. |
-| **Neuron 4** | $\sigma_2$ (Devijacija za ventilaciju) | $\text{Softplus}(z_4) = \ln(1 + e^{z_4})$ | $(0, +\infty)$ | Određuje nivo istraživanja (šuma) za rad ventilacije u datom stanju. |
+| 1 | $\mu_1$ (klima) | $\tanh(z_1)$ | $[-1, 1]$ | ciljana snaga grijanja ili hlađenja |
+| 2 | $\sigma_1$ (klima) | $\sigma_{min} + \text{softplus}(z_2)$ | $[\sigma_{min}, \infty)$ | nivo istraživanja klime |
+| 3 | $\mu_2$ (ventilacija) | $\text{sigmoid}(z_3)$ | $[0, 1]$ | ciljana otvorenost klapne |
+| 4 | $\sigma_2$ (ventilacija) | $\sigma_{min} + \text{softplus}(z_4)$ | $[\sigma_{min}, \infty)$ | nivo istraživanja ventilacije |
 
-*Napomena za aktivaciju devijacija ($\sigma_1, \sigma_2$):* Koristi se **Softplus** funkcija umjesto obične eksponencijalne ($e^z$) jer garantuje da je $\sigma$ uvijek strogo pozitivan broj (što je matematički uslov za Gausovu gustinu), a istovremeno sprječava eksplodiranje brojeva (*overflow*) kod velikih vrijednosti.
+$\text{softplus}(z) = \ln(1 + e^z)$, a $\sigma_{min} = 0.05$.
 
-Konačne akcije se na svakom koraku uzorkuju prema formulama:
-$$a_1 \sim \mathcal{N}(\mu_1, \sigma_1^2), \quad a_2 \sim \mathcal{N}(\mu_2, \sigma_2^2)$$
+*Zašto softplus:* garantuje $\sigma > 0$ (uslov za Gausovu gustinu) bez eksplodiranja za velike $z$, a izvod mu je jednostavan: $\text{sigmoid}(z)$.
+
+*Zašto donja granica $\sigma_{min}$:* u gradijentu se pojavljuje $1/\sigma^2$, pa bi za $\sigma \to 0$ korak postao ogroman i trening bi se raspao.
+
+Akcije se uzorkuju kao $a_1 \sim \mathcal{N}(\mu_1, \sigma_1^2)$ i $a_2 \sim \mathcal{N}(\mu_2, \sigma_2^2)$.
 
 ---
 
-## 4. Arhitektura mreže (4 – 8 – 4) i inženjersko opravdanje
+## 4. Arhitektura mreže (4 – H – 4)
 
-### Struktura slojeva i proračun parametara
-Mreža je projektovana kao višeslojni perceptron (**MLP**) sa jednim skrivenim slojem od 8 neurona i ukupno **76 parametara** koji se uče putem ručnog *backpropagation*-a:
+### Struktura i broj parametara
 
-1. **Ulazni sloj (4 čvora):** Prima vektor stanja $[x_1, x_2, x_3, x_4]$.
-2. **Skriveni sloj (8 neurona, $\tanh$ aktivacija):**
-   * Matrica težina $W_1$: dimenzija $4 \times 8 = 32$ težine.
-   * Vektor slobodnih članova $b_1$: $8$ parametara.
-3. **Izlazni sloj (4 neurona):**
-   * Matrica težina $W_2$: dimenzija $8 \times 4 = 32$ težine.
-   * Vektor slobodnih članova $b_2$: $4$ parametra.
-* **Ukupno parametara:** $32 + 8 + 32 + 4 = \mathbf{76\text{ parametara}}$.
+Višeslojni perceptron s jednim skrivenim slojem od **H neurona** ($\tanh$):
 
-### Zašto mreža izgleda baš ovako? (Ključni argumenti za odbranu)
+1. **Ulaz (4):** $[x_1, x_2, x_3, x_4]$.
+2. **Skriveni sloj (H):** $W_1$ je $4 \times H$, $b_1$ je $1 \times H$.
+3. **Izlazni sloj (4):** $W_2$ je $H \times 4$, $b_2$ je $1 \times 4$.
 
-1. **Zašto postoji skriveni sloj (a ne jednoslojna mreža)?**
-   Uvođenjem 4 senzora i 2 suprotstavljene akcije, problem prestaje biti čisto linearan. Odluka o snazi klime sada zavisi od *kombinacije* više ulaza istovremeno (npr. proizvod otvorenosti ventilacije, spoljašnje temperature i broja ljudi). Jednoslojna mreža samo sabira ulaze i ne može da uhvati ovakve nelinearne interakcije. Skriveni sloj sa $\tanh$ aktivacijom omogućava mreži da kombinuje senzore i riješi sukob uređaja.
-2. **Zašto baš 8 neurona (umjesto 64 ili 128)?**
-   U čistom *Policy Gradient* (REINFORCE) algoritmu koji se piše od nule u NumPy-ju, gradijenti imaju visok statistički šum. Prevelik broj neurona (npr. 64) stvorio bi stotine parametara koji bi se raspršili pod uticajem šuma, usporavajući učenje i destabilizujući sistem. Osam neurona predstavlja idealan inženjerski kompromis – dovoljno kapaciteta za nelinearnost, a dovoljno malo parametara za brzu konvergenciju i stabilnost.
-3. **Zašto se $\sigma_1$ i $\sigma_2$ uče kao izlazi mreže?**
-   Učenje standardnih devijacija u zavisnosti od stanja omogućava **kontekstualnu eksploraciju**. Kada se sistem nađe u nepoznatom ili ekstremnom stanju (npr. nagli ulazak 10 ljudi u sobu), mreža može povećati $\sigma$ kako bi aktivnije istražila nova rješenja. Kada je prostorija stabilna na 22°C i 400 ppm, mreža samostalno smanjuje $\sigma$ blizu nule, pretvarajući agenta u precizan i pouzdan kontroler.
+**Ukupno parametara: $4H + H + 4H + 4 = 9H + 4$** (za $H = 8$: 76).
 
+**Zahtjev za implementaciju:** $H$ je parametar konstruktora (`Policy(H=8)`). Dimenzije ulaza (4) i izlaza (4) takođe ne smiju biti upisane na više mjesta. Promjena H ne smije tražiti izmjenu formula, samo dimenzija.
+
+### Opravdanje (za odbranu)
+
+1. **Zašto skriveni sloj?** Odluka o snazi klime zavisi od *kombinacije* ulaza (npr. hladno u sobi s puno ljudi drukčije je nego hladno u praznoj sobi). Mreža bez skrivenog sloja kombinuje ulaze samo linearno.
+2. **Zašto H = 8?** Problem je mali (4 ulaza, 2 akcije), pa je 8 neurona dovoljno da uhvati nelinearne veze, a trening ostaje brz, a ručni backprop pregledan. Veća mreža se provjerava poređenjem H = 8 i H = 16 na više seedova, i uzima se ona koju rezultati opravdaju.
+3. **Zašto se $\sigma$ uči kao izlaz mreže?** Omogućava *kontekstualnu eksploraciju*: u nepoznatom stanju (npr. naglo ulazi mnogo ljudi) mreža može povećati $\sigma$ i više istraživati, a u mirnom stanju smanjiti $\sigma$. Poredi se s varijantom u kojoj je $\sigma$ zadan rasporedom (opada kroz vrijeme).
+
+---
+
+## 5. Preporuke za početne vrijednosti
+
+* **Težine skrivenog sloja $W_1$:** male slučajne vrijednosti, npr. $\mathcal{N}(0, 0.5^2)$, $b_1 = 0$.
+* **Težine izlaznog sloja $W_2$:** male, npr. $\mathcal{N}(0, 0.1^2)$, tako da mreža krene s $\mu_1 \approx 0$ (klima isključena) i $\mu_2 \approx 0.5$ (klapna napola otvorena).
+* **Bias izlaza za $\sigma$:** postaviti tako da početni $\sigma \approx 0.3$, tj. $b_2[\sigma] = \ln(e^{0.25} - 1) \approx -1.26$. Bez toga je početni $\sigma$ oko 0.74, što je mnogo za akciju u opsegu $[0, 1]$.
+* **Seed:** koristiti `np.random.default_rng(seed)` radi ponovljivosti.
+
+---
+
+## 6. Sažetak formula za gradijent (provjeriti prema `Izvodi.pdf`)
+
+Za jedan potez $t$ sa povratom $G_t$ i akcijom $a_i$ (neodsječenom):
+
+$$\frac{\partial \log\pi}{\partial \mu_i} = \frac{a_i - \mu_i}{\sigma_i^2},\qquad
+\frac{\partial \log\pi}{\partial \sigma_i} = \frac{(a_i - \mu_i)^2 - \sigma_i^2}{\sigma_i^3}$$
+
+Greške izlaznog sloja $\Delta = [\Delta_1, \Delta_2, \Delta_3, \Delta_4]$:
+
+* $\Delta_1 = \dfrac{a_1 - \mu_1}{\sigma_1^2}\,(1 - \mu_1^2)$  (tanh)
+* $\Delta_2 = \dfrac{(a_1 - \mu_1)^2 - \sigma_1^2}{\sigma_1^3}\,\text{sigmoid}(z_2)$  (softplus)
+* $\Delta_3 = \dfrac{a_2 - \mu_2}{\sigma_2^2}\,\mu_2(1 - \mu_2)$  (sigmoid)
+* $\Delta_4 = \dfrac{(a_2 - \mu_2)^2 - \sigma_2^2}{\sigma_2^3}\,\text{sigmoid}(z_4)$  (softplus)
+
+Zatim: $\delta^{(2)} = \Delta \cdot G_t$, $\;\delta^{(1)} = (\delta^{(2)} W_2^T) \odot (1 - h^2)$, $\;\partial J/\partial W_2 = h^T \delta^{(2)}$, $\;\partial J/\partial b_2 = \delta^{(2)}$, $\;\partial J/\partial W_1 = x^T \delta^{(1)}$, $\;\partial J/\partial b_1 = \delta^{(1)}$.
+
+**Ispravke u rukom pisanom izvodu:**
+1. `d tanh(z)/dz = 1 − tanh²(z)` (u međukoraku nedostaje kvadrat).
+2. U razvoju za $z^{(1)}$ težine su $W^{(1)}$, ne $W^{(2)}$.
+3. U $\Delta_4$ treba $\text{sigmoid}(z_4)$ (provjeriti rukopis).
+
+**Povrat i korak učenja:** $G_t$ se računa unazad po epizodi (suma budućih nagrada), normalizuje se preko cijelog batcha (oduzme se srednja vrijednost, podijeli standardnom devijacijom), a ažuriranje je gradijentni uspon: $\theta \leftarrow \theta + \alpha\,\nabla J$.
+
+**Obavezna provjera:** numerička provjera gradijenta (centralne razlike) za $H = 8$ i barem još jedno $H$, prije nego što se pokrene trening (`check_gradient.py`).
