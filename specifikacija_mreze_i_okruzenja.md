@@ -15,10 +15,6 @@ Prije ulaska u neuronsku mrežu, svi senzorski podaci se normalizuju (skaliraju)
 
 ---
 
-1. **Akcija 1 ($a_1 \in [-1.0, 1.0]$) — Snaga HVAC sistema (Klima uređaj):**
-   * **Mehanizam:** Kontroliše termičku energiju u zatvorenom krugu (vrti i hladi/grije postojeći vazduh u sobi, ali ne dovodi svjež vazduh spolja).
-   * **Opseg:** Negativne vrijednosti (`-1.0` do `0.0`) predstavljaju procenat snage hlađenja, pozitivne (`0.0` do `1.0`) procenat snage grijanja, dok `0.0` označava mirovanje.
-    
 2. **Akcija 2 ($a_2 \in [0.0, 1.0]$) — Otvorenost motorizovane ventilacione klapne:**
    * **Mehanizam:** Kontroliše metalna zakrilca (nalik venecijanerima) smještena unutar ventilacione cijevi, koja pokreće mali elektromotor (aktuator). Služi za izbacivanje ustajalog vazduha ($CO_2$) i ubacivanje svježeg vazduha spolja.
    * **Opseg i preslikavanje ugla:** Izlaz mreže (`0.0` do `1.0`) linearno se preslikava u fizički ugao zakretanja zakrilaca od **0° do 90°** ($\theta = a_2 \cdot 90^\circ$). Vrijednost `0.0` (0°) znači da su zakrilca spuštena i cijev je potpuno zatvorena, `0.5` (45°) da je otvorena dopola, a `1.0` (90°) da su zakrilca potpuno paralelna sa cijevi i vazduh slobodno struji.
@@ -67,3 +63,4 @@ Mreža je projektovana kao višeslojni perceptron (**MLP**) sa jednim skrivenim 
    U čistom *Policy Gradient* (REINFORCE) algoritmu koji se piše od nule u NumPy-ju, gradijenti imaju visok statistički šum. Prevelik broj neurona (npr. 64) stvorio bi stotine parametara koji bi se raspršili pod uticajem šuma, usporavajući učenje i destabilizujući sistem. Osam neurona predstavlja idealan inženjerski kompromis – dovoljno kapaciteta za nelinearnost, a dovoljno malo parametara za brzu konvergenciju i stabilnost.
 3. **Zašto se $\sigma_1$ i $\sigma_2$ uče kao izlazi mreže?**
    Učenje standardnih devijacija u zavisnosti od stanja omogućava **kontekstualnu eksploraciju**. Kada se sistem nađe u nepoznatom ili ekstremnom stanju (npr. nagli ulazak 10 ljudi u sobu), mreža može povećati $\sigma$ kako bi aktivnije istražila nova rješenja. Kada je prostorija stabilna na 22°C i 400 ppm, mreža samostalno smanjuje $\sigma$ blizu nule, pretvarajući agenta u precizan i pouzdan kontroler.
+
