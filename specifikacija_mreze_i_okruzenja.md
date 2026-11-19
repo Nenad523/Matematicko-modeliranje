@@ -9,6 +9,8 @@
 > 5. Opravdanje za veličinu mreže je prepisano (odjeljak 4). Nije tačno da veći broj neurona "raspršuje parametre pod uticajem šuma".
 > 6. Dodan je **sažetak formula za gradijent** (odjeljak 6). Izvodi su provjereni u `Izvodi.pdf`, osim tri sitne ispravke navedene u odjeljku 6.
 > 7. Ciljna temperatura u cijelom dokumentu je **22 °C** (kao u `environment.py`).
+> 8. **Fiksni (ručno zadani) σ je izbačen.** σ se uvijek uči kao izlaz mreže, pa u kodu nema zastavice `learn_sigma`, ni parametara `sigma0`, `sigma_decay`, `fixed_sigma`.
+> 9. Dodan je **ugovor prema ostalim modulima** (odjeljak 7), da članovi 2 i 3 ne moraju usaglašavati pozive.
 
 ---
 
@@ -83,7 +85,7 @@ Višeslojni perceptron s jednim skrivenim slojem od **H neurona** ($\tanh$):
 
 1. **Zašto skriveni sloj?** Odluka o snazi klime zavisi od *kombinacije* ulaza (npr. hladno u sobi s puno ljudi drukčije je nego hladno u praznoj sobi). Mreža bez skrivenog sloja kombinuje ulaze samo linearno.
 2. **Zašto H = 8?** Problem je mali (4 ulaza, 2 akcije), pa je 8 neurona dovoljno da uhvati nelinearne veze, a trening ostaje brz, a ručni backprop pregledan. Veća mreža se provjerava poređenjem H = 8 i H = 16 na više seedova, i uzima se ona koju rezultati opravdaju.
-3. **Zašto se $\sigma$ uči kao izlaz mreže?** Omogućava *kontekstualnu eksploraciju*: u nepoznatom stanju (npr. naglo ulazi mnogo ljudi) mreža može povećati $\sigma$ i više istraživati, a u mirnom stanju smanjiti $\sigma$. Poredi se s varijantom u kojoj je $\sigma$ zadan rasporedom (opada kroz vrijeme).
+3. **Zašto se $\sigma$ uči kao izlaz mreže?** Omogućava *kontekstualnu eksploraciju*: u nepoznatom stanju (npr. naglo ulazi mnogo ljudi) mreža može povećati $\sigma$ i više istraživati, a u mirnom stanju smanjiti $\sigma$. Alternativa je ručno zadan raspored po kojem $\sigma$ opada kroz vrijeme, ali tada agent ne može prilagoditi istraživanje stanju. U ovom projektu se $\sigma$ **uvijek uči**; ručni raspored se pominje samo kao moguće proširenje.
 
 ---
 
@@ -120,3 +122,59 @@ Zatim: $\delta^{(2)} = \Delta \cdot G_t$, $\;\delta^{(1)} = (\delta^{(2)} W_2^T)
 **Povrat i korak učenja:** $G_t$ se računa unazad po epizodi (suma budućih nagrada), normalizuje se preko cijelog batcha (oduzme se srednja vrijednost, podijeli standardnom devijacijom), a ažuriranje je gradijentni uspon: $\theta \leftarrow \theta + \alpha\,\nabla J$.
 
 **Obavezna provjera:** numerička provjera gradijenta (centralne razlike) za $H = 8$ i barem još jedno $H$, prije nego što se pokrene trening (`check_gradient.py`).
+
+---
+
+## 7. Ugovor prema ostalim modulima
+
+Da članovi 2 (mreža) i 3 (trening, grafikoni) ne moraju usaglašavati pozive:
+
+```python
+Policy(seed=0, H=8)          # konstruktor
+act(s)      -> (u, m, sigma) # s je vektor (4,); sva tri rezultata su vektori (2,)
+mu(s)       -> m             # deterministička akcija, za evaluaciju
+update(batch, alpha, clip_norm=None)
+grad(batch) -> [gW1, gb1, gW2, gb2]
+log_prob_batch(S, U) -> (n,) # za numeričku provjeru gradijenta
+params()    -> [W1, b1, W2, b2]
+save(path) / load(path)
+```
+
+`batch` je lista petorki `(s, u, m, sigma, G)`, gdje je `u` **neodsječena** akcija, a `G` već normalizovan povrat.
+
+Okolina (`environment.Room`) vraća `info` sa ključevima `T_soba`, `T_spolja`, `CO2_soba`, `broj_ljudi`, `t`, `T_cilj`, `a1`, `a2`.
+
+---
+
+## 8. Izmjene u okolini (`environment.py`) i zašto
+
+Prva verzija okoline imala je grešku zbog koje agent nije mogao dobro naučiti ni temperaturu ni ventilaciju. Tri konstante su izmijenjene:
+
+| Konstanta | Bilo | Sada | Razlog |
+| :--- | ---: | ---: | :--- |
+| `G` (snaga klime) | 1.50 | **3.50** | **Cilj nije bio dostižan.** Ravnoteža pri punoj klimi je $T_{spolja} + G/K$, što je sa starim vrijednostima $T_{spolja} + 15$. Pošto `reset()` bira dane u kojima spoljna temperatura pada do $-3.4\,^\circ$C, cilj od 22 °C bio je fizički nedostižan dijelom dana na **17 od 20 dana**. Ta neizbježna kazna gušila je sve ostalo. Sada je $G/K = 35$. |
+| `SCALE` | `[5, 10, 500, 10]` | **`[1.5, 10, 700, 3]`** | Ulazi $x_1$ i $x_4$ koristili su samo mali dio opsega (broj ljudi 0–3 dijeljen sa 10 daje najviše 0.3), pa su za mrežu bili skoro nevidljivi. Nove skale drže sve ulaze u opsegu u kojem $\tanh$ nije ravan. |
+| `W_CO2` | 0.20 | **10.0** | Kazna za CO₂ bila je oko 100 puta slabija od kazne za temperaturu, pa je agent potpuno ignorisao ventilaciju i druga akcija je bila ukrasna. Sada 500 ppm preko granice vrijedi otprilike koliko 3.2 °C odstupanja. |
+
+Provjereno je da bez prve izmjene nijedna druga ne pomaže: pri `G = 1.50` povećanje `W_CO2` na 5 ili 50 samo pogoršava rezultat, jer agent nema načina da istovremeno drži temperaturu.
+
+---
+
+## 9. Rezultati (1500 iteracija, batch 7 dana, H = 8)
+
+Svi kontroleri su mjereni na **istih 30 novih dana** koje mreža nije vidjela tokom treninga, i pod **istom** funkcijom nagrade.
+
+| Kontroler | Povrat | Σ(T−22)² | Vrijeme iznad 1000 ppm | Σa₁² (energija klime) | Σa₂² |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| netrenirana mreža | −11621 ± 7409 | — | — | — | — |
+| **agent (REINFORCE)** | **−22.5 ± 25.0** | **15.2** | **9.2 %** | **85** | 34 |
+| on/off termostat | −99.6 ± 21.3 | 70.4 | 34.2 % | 240 | 40 |
+| ručni P-kontroler (najbolji od 12) | ≈ −20 | — | 0 % | — | — |
+
+Agent je bolji od termostata **po sve tri osi istovremeno**: drži temperaturu oko 4.6 puta tačnije, provede 3.7 puta manje vremena iznad granice CO₂, i pritom troši oko 65 % manje energije na klimu.
+
+**Zašto je bolji:** termostat radi po principu sve ili ništa (a₁ skače između −1 i +1, pa temperatura stalno osciluje oko cilja). Agent je naučio **proporcionalno** upravljanje: drži a₁ na vrijednosti koja tačno poništava gubitak toplote za trenutnu spoljnu temperaturu, i ventilira blago ali stalno (a₂ oko 0.4) umjesto u naletima. Rezultat je ravna linija na 22.0 °C i CO₂ koji rijetko prelazi granicu.
+
+**Stabilnost:** `multi_seed.py` trenira isti model sa pet različitih seedova. Povrat je **−21.5 ± 1.3** (najgori −22.8, najbolji −19.2), dakle rezultat nije slučajnost jednog pokretanja. Za poređenje, termostat je −99.6.
+
+**Naučena σ:** počinje oko 0.30 i spontano opada na oko 0.15 do kraja treninga, bez ručnog rasporeda. To je potvrda da mreža sama smanjuje istraživanje kada nađe dobru politiku.
